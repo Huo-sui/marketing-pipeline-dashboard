@@ -1,0 +1,53 @@
+import { Alert, Avatar, Button, Descriptions, Form, Input, Popconfirm, Select, Steps, message } from "antd";
+import { Archive, ArrowLeft, CheckCircle2, ExternalLink, LogIn, RefreshCw, RotateCcw, Save } from "lucide-react";
+import { useEffect, useState } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router";
+import { PageHeader } from "../components/Shared";
+import { platformAccountWorker, type DetectedIdentity, type PlatformLoginSession } from "../services/platformAccountWorker";
+import { useDemoState } from "../state/demoStateContext";
+import type { AccountSetupInput, Platform } from "../types";
+
+type AccountFormValue = { platform: Platform; label: string; notes?: string; deviceId: string };
+const platforms: Platform[] = ["TikTok", "小红书", "抖音", "Reddit", "X", "Instagram"];
+const phoneAppPackages: Partial<Record<Platform, string>> = { TikTok: "com.zhiliaoapp.musically", 小红书: "com.xingin.xhs" };
+
+export function AccountSetupPage() {
+  const { accountId: routeAccountId } = useParams();
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { accounts, automationProfiles, createAccountBundle, updateAccountBundle, setAccountLifecycleStatus, setAccountSessionStatus, confirmAccountIdentity } = useDemoState();
+  const [form] = Form.useForm<AccountFormValue>();
+  const [createdAccountId, setCreatedAccountId] = useState<string>();
+  const [currentStep, setCurrentStep] = useState(() => searchParams.get("step") === "1" ? 1 : 0);
+  const [session, setSession] = useState<PlatformLoginSession>();
+  const [detectedIdentity, setDetectedIdentity] = useState<DetectedIdentity>();
+  const [busy, setBusy] = useState(false);
+  const [messageApi, contextHolder] = message.useMessage();
+  const accountId = routeAccountId ?? createdAccountId;
+  const account = accountId ? accounts.find((item) => item.id === accountId) : undefined;
+  const profile = accountId ? automationProfiles.find((item) => item.accountId === accountId) : undefined;
+  const isEditing = Boolean(routeAccountId);
+  const watchedPlatform = Form.useWatch("platform", form);
+  const platform = account?.platform ?? watchedPlatform ?? "TikTok";
+  const phoneAppPackage = phoneAppPackages[platform];
+  const phoneSupported = Boolean(phoneAppPackage);
+  const stepItems = [{ title: "基本信息" }, { title: `${platform} 连接` }, { title: "确认账号" }];
+
+  useEffect(() => { if (account) form.setFieldsValue({ platform: account.platform, label: account.label, notes: account.notes, deviceId: profile?.deviceId ?? "" }); }, [account, form, profile]);
+  useEffect(() => { if (accountId && account) void platformAccountWorker.getSession(account.platform, accountId).then(setSession).catch(() => undefined); }, [accountId, account]);
+  if (isEditing && !account) return <>{contextHolder}<PageHeader title="平台账号不存在" meta="该账号可能已被移除" actions={<Button icon={<ArrowLeft size={15} />} onClick={() => navigate("/accounts")}>返回账号</Button>} /><Alert type="error" showIcon message="无法加载账号记录" /></>;
+
+  const toInput = (values: AccountFormValue): AccountSetupInput => { const appPackage = phoneAppPackages[values.platform]; return { account: { platform: values.platform, label: values.label.trim(), notes: values.notes?.trim() ?? "" }, profile: { runnerType: appPackage ? "appium_uiautomator2" : "playwright", profileName: profile?.profileName ?? `${values.platform} Adapter`, browserEnvironmentId: "", deviceId: appPackage ? values.deviceId.trim() : undefined, deviceModel: profile?.deviceModel, appPackage } }; };
+  const saveBasics = async () => { try { const values = await form.validateFields(); if (accountId) await updateAccountBundle(accountId, toInput(values)); else { const id = await createAccountBundle(toInput(values)); setCreatedAccountId(id); navigate(`/accounts/${id}/edit?step=1`, { replace: true }); } setCurrentStep(1); messageApi.success("平台账号记录已保存"); } catch (error) { messageApi.error(error instanceof Error ? error.message : "账号记录保存失败"); } };
+  const openLogin = async () => { if (!accountId || !phoneSupported) { messageApi.info(`${platform} 使用 HTTP Adapter；请配置服务端 API 后运行规则`); return; } setBusy(true); try { setAccountSessionStatus(accountId, "verifying", `等待在已连接手机上确认 ${platform} 登录状态`); const next = await platformAccountWorker.open(platform, accountId, profile?.deviceId); setSession(next); } catch (error) { setAccountSessionStatus(accountId, "needs_reauth", error instanceof Error ? error.message : "连接启动失败"); messageApi.error(error instanceof Error ? error.message : "无法启动平台连接"); } finally { setBusy(false); } };
+  const inspectIdentity = async () => { if (!accountId || !phoneSupported) return; setBusy(true); try { const next = await platformAccountWorker.inspect(platform, accountId, profile?.deviceId); setSession(next); if (!next.identity) { setAccountSessionStatus(accountId, "login_required", next.error); messageApi.warning(next.error || "尚未检测到已登录账号"); return; } setDetectedIdentity(next.identity); setCurrentStep(2); messageApi.success(`检测到 ${next.identity.handle}`); } catch (error) { messageApi.error(error instanceof Error ? error.message : "身份检测失败"); } finally { setBusy(false); } };
+  const bindIdentity = async (replaceExisting = false) => { if (!accountId || !detectedIdentity) return; const confirmed = await confirmAccountIdentity(accountId, detectedIdentity, replaceExisting); if (!confirmed) { messageApi.error(`当前登录的是 ${detectedIdentity.handle}，与已绑定账号不一致`); return; } await platformAccountWorker.close(platform, accountId).catch(() => undefined); messageApi.success(`已绑定 ${platform} 账号 ${detectedIdentity.handle}`); navigate("/accounts"); };
+  const changeLifecycle = () => { if (account) void setAccountLifecycleStatus(account.id, account.lifecycleStatus === "active" ? "archived" : "active"); navigate("/accounts"); };
+  const differs = Boolean(account && detectedIdentity && account.handle && account.handle.toLowerCase() !== detectedIdentity.handle.toLowerCase());
+  const renderStep = () => {
+    if (currentStep === 0) return <section className="setup-section"><div className="setup-section-heading"><h2>平台账号记录</h2><p>平台特有行为由 Adapter 负责，账号记录使用统一结构。</p></div><Alert className="section-alert" type="info" showIcon message="账号、抓取、发布和互动都通过统一平台合同接入。" /><Form.Item name="platform" label="平台" rules={[{ required: true }]}><Select options={platforms.map((item) => ({ value: item, label: item }))} disabled={isEditing} /></Form.Item><Form.Item name="label" label="内部账号标签" rules={[{ required: true, whitespace: true, message: "请输入账号标签" }]}><Input placeholder={`例如：${platform} 主账号`} /></Form.Item>{phoneSupported && <Form.Item name="deviceId" label="Android 设备序列号" rules={[{ required: true, whitespace: true, message: "请输入设备序列号" }]}><Input placeholder="例如：fa5bc774" /></Form.Item>}<Form.Item name="notes" label="备注"><Input.TextArea rows={4} maxLength={300} showCount /></Form.Item><Alert type="warning" showIcon message={phoneSupported ? `Dashboard 不保存密码，${platform} 登录保留在手机应用中。` : `${platform} 通过 HTTP Adapter 接入，API 地址和凭据只放在服务端环境变量。`} /></section>;
+    if (currentStep === 1) return <section className="setup-section"><div className="setup-section-heading"><h2>{platform} 连接</h2><p>{phoneSupported ? "在手机完成登录后检测实际账号。" : "由服务端 HTTP Adapter 连接，不依赖手机操控。"}</p></div>{!phoneSupported && <Alert type="info" showIcon message={`请配置 ${platform} Adapter 环境变量后运行话题规则；账号记录已可用于项目绑定。`} />}<Descriptions bordered size="small" column={1}><Descriptions.Item label="账号记录">{account?.label ?? "—"}</Descriptions.Item><Descriptions.Item label="连接器">{phoneSupported ? session?.appPackage ?? phoneAppPackage : "HTTP Adapter"}</Descriptions.Item><Descriptions.Item label="状态">{session?.browserOpen ? "已唤醒" : phoneSupported ? "未检测" : "运行时检查"}</Descriptions.Item></Descriptions>{phoneSupported && <div className="account-login-actions"><Button size="large" icon={<LogIn size={16} />} onClick={openLogin} loading={busy}>打开手机 {platform}</Button><Button type="primary" size="large" icon={<RefreshCw size={16} />} onClick={inspectIdentity} loading={busy}>检测账号</Button></div>}<Alert className="setup-inline-alert" type="info" showIcon message={phoneSupported ? "只读取公开主页状态，不读取密码、验证码或私信。" : `${platform} 身份由 API Adapter 提供。`} /></section>;
+    return <section className="setup-section"><div className="setup-section-heading"><h2>确认 {platform} 实际账号</h2><p>确认后才会作为项目账号使用。</p></div>{detectedIdentity && <div className="detected-account"><Avatar size={72} src={detectedIdentity.avatarUrl}>{detectedIdentity.displayName.slice(0, 1)}</Avatar><div><div className="detected-account-title">{detectedIdentity.displayName}</div><div className="detected-account-handle">{detectedIdentity.handle}</div><a href={detectedIdentity.profileUrl} target="_blank" rel="noreferrer">查看主页 <ExternalLink size={12} /></a></div></div>}<Descriptions bordered size="small" column={1}><Descriptions.Item label={`${platform} User ID`}>{detectedIdentity?.externalUserId || "页面未提供"}</Descriptions.Item><Descriptions.Item label="检测时间">{detectedIdentity?.detectedAt ? new Date(detectedIdentity.detectedAt).toLocaleString() : "—"}</Descriptions.Item></Descriptions>{differs ? <Alert type="error" showIcon message="当前登录身份与已绑定身份不一致。" action={<Popconfirm title="确认切换绑定账号？" onConfirm={() => void bindIdentity(true)}><Button danger>确认切换</Button></Popconfirm>} /> : <Alert type="success" showIcon message="已读取实际登录身份，确认后保存绑定。" />}</section>;
+  };
+  return <>{contextHolder}<PageHeader title={account ? `绑定 ${account.label}` : "绑定平台账号"} meta="平台连接由统一 Adapter 合同管理" actions={<>{account && (account.lifecycleStatus === "active" ? <Popconfirm title="归档这个账号？" onConfirm={changeLifecycle}><Button danger icon={<Archive size={15} />}>归档</Button></Popconfirm> : <Button icon={<RotateCcw size={15} />} onClick={changeLifecycle}>恢复</Button>)}<Button icon={<ArrowLeft size={15} />} onClick={() => navigate("/accounts")}>返回账号</Button></>} /><div className="setup-shell"><div className="setup-steps"><Steps current={currentStep} items={stepItems} /></div><Form form={form} layout="vertical" initialValues={{ platform: "TikTok", label: "", notes: "", deviceId: "fa5bc774" }} requiredMark="optional"><div className="setup-surface">{renderStep()}</div><div className="setup-actions"><Button disabled={currentStep === 0} onClick={() => setCurrentStep((step) => Math.max(0, step - 1))}>上一步</Button><div className="topbar-spacer" />{currentStep === 0 && <Button type="primary" icon={<Save size={15} />} onClick={() => void saveBasics()}>保存并继续</Button>}{currentStep === 1 && phoneSupported && <Button type="primary" icon={<RefreshCw size={15} />} onClick={inspectIdentity} loading={busy}>检测账号</Button>}{currentStep === 2 && !differs && <Button type="primary" icon={<CheckCircle2 size={15} />} onClick={() => void bindIdentity()}>确认绑定</Button>}</div></Form></div></>;
+}

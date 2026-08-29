@@ -180,15 +180,55 @@ The current `demoDataProvider` is an explicit local adapter. Pages consume norma
 
 Publishing is intentionally last. Read-only discovery and review must remain useful even when no account or publisher is connected.
 
-## 10. Current Limits
+## 10. Platform Adapter Contract
 
-- All displayed records and metrics are Demo Seed data.
-- No external platform connector is registered.
-- No Control API, database, object store, or secret vault is connected yet.
-- Buttons that would cross an external boundary report their Demo status rather than claiming success.
+The control API exposes `GET /api/v1/platforms` and routes discovery through a
+platform registry. Adapters declare mode (`phone` or `http`), capabilities,
+runtime requirements (account binding, confirmed identity, phone runner,
+visual provider), and the adapter's required extraction fields. The control
+plane consumes only these declarations and normalized
+records; it does not branch on platform names.
+
+The reusable Android layer is `server/mobile/androidPhoneDriver.ts`. It owns
+device discovery, ADB/Appium startup, UI source, taps, Unicode text input and
+clipboard access. Platform page semantics do not belong there.
+
+TikTok is `tiktok-phone-v1`. Xiaohongshu is
+`xiaohongshu-phone-v1`; its search tabs, note accessibility labels, metrics,
+share sheet and URL parsing are isolated in
+`server/platforms/xiaohongshuPhoneAdapter.ts`. Both return normalized
+`{ posts, logs }` with real external ID, canonical URL, author, title, metrics,
+media type, matched term and raw evidence. Missing adapters or unmet runtime
+requirements fail preflight explicitly; no fake data is written.
+
+For any saved project, the one-click path is: choose the project, open Topic
+Radar, and click `运行 P0 规则`. The UI invokes the persisted P0 rules; each rule runs
+the same Discovery → extraction-contract assertion → qualification → SourcePost upsert → metric snapshot →
+topic match → PipelineRun/RunEvent path. Codex is not part of this runtime.
+
+Hard admission thresholds remain persisted TopicWatch configuration and are
+never hard-coded in an adapter. Relative anomaly scoring is a shared pipeline
+concern, but each cohort is restricted to the same platform, TopicWatch,
+tracked term, and publication-age bucket. It compares like velocity, comment
+velocity, and comment rate; insufficient samples produce an explicit
+`insufficient_baseline` result instead of an invented score.
+
+Adapters own the evidence required to normalize platform fields. Xiaohongshu
+scrolls the note body until it finds standalone publication metadata, retains
+the raw date label, and includes `publishedAt` in its extraction checklist. An
+incomplete candidate is retried or replaced inside the adapter and is never
+submitted to hard-threshold qualification.
+
+## 11. Current Limits
+
+- Publishing and engagement connectors are not registered yet.
+- TikTok Discovery still uses AutoGLM as a share-link fallback; Xiaohongshu's
+  current phone playbook is deterministic and does not require a vision model.
+- A locked Android phone remains an explicit runtime failure. The Pipeline does
+  not bypass device security or store the user's lock-screen password.
 - Global trends, music trends, model training, and unattended auto-commenting are outside v0.1.
 
-## 11. Researched Wheels
+## 12. Researched Wheels
 
 - MediaCrawler: useful extraction/search reference for Chinese platforms; non-commercial learning license.
 - TikTok-Api: unofficial retrieval wrapper; not a publishing provider.

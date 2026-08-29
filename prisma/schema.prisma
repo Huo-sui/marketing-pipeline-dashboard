@@ -1,0 +1,792 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum LifecycleStatus {
+  active
+  archived
+}
+
+enum AccountSessionStatus {
+  login_required
+  verifying
+  healthy
+  needs_reauth
+  challenged
+  identity_mismatch
+}
+
+enum ArtifactStatus {
+  pending
+  ready
+  failed
+  deleted
+}
+
+enum ReviewStatus {
+  pending
+  approved
+  rejected
+}
+
+enum SourceAction {
+  unreviewed
+  engage
+  adapt
+  ignored
+}
+
+enum IdeaStatus {
+  candidate
+  approved
+  rejected
+  generating
+  ready_for_review
+}
+
+enum RunStatus {
+  queued
+  running
+  completed
+  failed
+  waiting_review
+  cancelled
+}
+
+enum PublicationStatus {
+  draft
+  approved
+  submitting
+  succeeded
+  failed_retryable
+  unknown_requires_review
+}
+
+model Workspace {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  timezone  String   @default("UTC")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("workspaces")
+}
+
+model Project {
+  id                String          @id @default(uuid()) @db.Uuid
+  workspaceId       String          @map("workspace_id") @db.Uuid
+  name              String
+  type              String
+  stage             String
+  description       String          @default("")
+  targetMarkets     String[]        @default([]) @map("target_markets")
+  languages         String[]        @default([])
+  platforms         String[]        @default([])
+  timezone          String          @default("UTC")
+  status            LifecycleStatus @default(active)
+  promptPackVersion String?         @map("prompt_pack_version")
+  settings          Json?
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+
+  @@index([workspaceId, status])
+  @@map("projects")
+}
+
+model ProjectConfigVersion {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  projectId   String   @map("project_id") @db.Uuid
+  version     Int
+  config      Json
+  createdBy   String?  @map("created_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([projectId, version])
+  @@index([workspaceId, projectId])
+  @@map("project_config_versions")
+}
+
+model PromptPack {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  projectId   String?  @map("project_id") @db.Uuid
+  name        String
+  description String   @default("")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([workspaceId, projectId])
+  @@map("prompt_packs")
+}
+
+model PromptPackVersion {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspaceId  String   @map("workspace_id") @db.Uuid
+  promptPackId String   @map("prompt_pack_id") @db.Uuid
+  version      Int
+  prompts      Json
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([promptPackId, version])
+  @@map("prompt_pack_versions")
+}
+
+model TopicWatch {
+  id                        String   @id @default(uuid()) @db.Uuid
+  workspaceId               String   @map("workspace_id") @db.Uuid
+  projectId                 String   @map("project_id") @db.Uuid
+  name                      String
+  platform                  String
+  terms                     String[] @default([])
+  excludeTerms              String[] @default([]) @map("exclude_terms")
+  searchMode                String   @default("sequential") @map("search_mode")
+  cadence                   String
+  state                     String   @default("running")
+  minLikes                  Int      @default(0) @map("min_likes")
+  minComments               Int      @default(0) @map("min_comments")
+  maxAgeHours               Int      @default(24) @map("max_age_hours")
+  minScore                  Float    @default(0) @map("min_score")
+  anomalyEnabled            Boolean  @default(true) @map("anomaly_enabled")
+  anomalyMethod             String   @default("robust_mad") @map("anomaly_method")
+  anomalyBaselineDays       Int      @default(30) @map("anomaly_baseline_days")
+  anomalyMinSamples         Int      @default(30) @map("anomaly_min_samples")
+  anomalyZThreshold         Float    @default(3.5) @map("anomaly_z_threshold")
+  collectorAccountBindingId String?  @map("collector_account_binding_id") @db.Uuid
+  currentVersion            Int      @default(1) @map("current_version")
+  createdAt                 DateTime @default(now()) @map("created_at")
+  updatedAt                 DateTime @updatedAt @map("updated_at")
+
+  @@index([workspaceId, projectId, state])
+  @@map("topic_watches")
+}
+
+model TopicWatchVersion {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspaceId  String   @map("workspace_id") @db.Uuid
+  projectId    String   @map("project_id") @db.Uuid
+  topicWatchId String   @map("topic_watch_id") @db.Uuid
+  version      Int
+  config       Json
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([topicWatchId, version])
+  @@map("topic_watch_versions")
+}
+
+model SocialAccount {
+  id                  String          @id @default(uuid()) @db.Uuid
+  workspaceId         String          @map("workspace_id") @db.Uuid
+  platform            String
+  label               String
+  handle              String          @default("")
+  externalUserId      String?         @map("external_user_id")
+  displayName         String?         @map("display_name")
+  avatarUrl           String?         @map("avatar_url")
+  profileUrl          String?         @map("profile_url")
+  identityConfirmedAt DateTime?       @map("identity_confirmed_at")
+  lifecycleStatus     LifecycleStatus @default(active) @map("lifecycle_status")
+  sharingPolicy       String          @default("shared_workspace") @map("sharing_policy")
+  connector           String
+  notes               String          @default("")
+  createdAt           DateTime        @default(now()) @map("created_at")
+  updatedAt           DateTime        @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, platform, externalUserId])
+  @@index([workspaceId, lifecycleStatus])
+  @@map("social_accounts")
+}
+
+model AccountRunner {
+  id                   String               @id @default(uuid()) @db.Uuid
+  workspaceId          String               @map("workspace_id") @db.Uuid
+  accountId            String               @map("account_id") @db.Uuid
+  runnerType           String               @map("runner_type")
+  profileName          String               @map("profile_name")
+  profileRef           String               @map("profile_ref")
+  browserEnvironmentId String?              @map("browser_environment_id")
+  deviceId             String?              @map("device_id")
+  deviceModel          String?              @map("device_model")
+  appPackage           String?              @map("app_package")
+  sessionStatus        AccountSessionStatus @default(login_required) @map("session_status")
+  lockState            String               @default("available") @map("lock_state")
+  lastVerifiedAt       DateTime?            @map("last_verified_at")
+  lastHealthCheck      String?              @map("last_health_check")
+  createdAt            DateTime             @default(now()) @map("created_at")
+  updatedAt            DateTime             @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, accountId])
+  @@map("account_runners")
+}
+
+model AccountIdentityCheck {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  accountId      String   @map("account_id") @db.Uuid
+  runnerId       String?  @map("runner_id") @db.Uuid
+  externalUserId String?  @map("external_user_id")
+  handle         String
+  displayName    String
+  avatarUrl      String?  @map("avatar_url")
+  profileUrl     String   @map("profile_url")
+  status         String
+  detectedAt     DateTime @map("detected_at")
+  rawPayload     Json?    @map("raw_payload")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([workspaceId, accountId, detectedAt])
+  @@map("account_identity_checks")
+}
+
+model ProjectAccountBinding {
+  id                  String   @id @default(uuid()) @db.Uuid
+  workspaceId         String   @map("workspace_id") @db.Uuid
+  projectId           String   @map("project_id") @db.Uuid
+  accountId           String   @map("account_id") @db.Uuid
+  roles               String[] @default([])
+  isPrimaryDiscovery  Boolean  @default(false) @map("is_primary_discovery")
+  isPrimaryPublishing Boolean  @default(false) @map("is_primary_publishing")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@unique([projectId, accountId])
+  @@index([workspaceId, projectId])
+  @@map("project_account_bindings")
+}
+
+model CollectionRun {
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  projectId       String    @map("project_id") @db.Uuid
+  topicWatchId    String?   @map("topic_watch_id") @db.Uuid
+  status          RunStatus @default(queued)
+  provider        String
+  providerVersion String?   @map("provider_version")
+  traceId         String    @map("trace_id")
+  idempotencyKey  String?   @map("idempotency_key")
+  inputSnapshot   Json?     @map("input_snapshot")
+  errorCode       String?   @map("error_code")
+  errorMessage    String?   @map("error_message")
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@unique([workspaceId, idempotencyKey])
+  @@index([workspaceId, projectId, status])
+  @@map("collection_runs")
+}
+
+model SourcePost {
+  id            String       @id @default(uuid()) @db.Uuid
+  workspaceId   String       @map("workspace_id") @db.Uuid
+  projectId     String       @map("project_id") @db.Uuid
+  platform      String
+  externalId    String       @map("external_id")
+  canonicalUrl  String       @map("canonical_url")
+  canonicalHash String       @map("canonical_hash")
+  author        String       @default("")
+  title         String       @default("")
+  body          String       @default("")
+  publishedAt   DateTime?    @map("published_at")
+  capturedAt    DateTime     @default(now()) @map("captured_at")
+  mediaType     String?      @map("media_type")
+  reviewState   ReviewStatus @default(pending) @map("review_state")
+  action        SourceAction @default(unreviewed)
+  rawPayload    Json?        @map("raw_payload")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  @@unique([platform, externalId])
+  @@unique([platform, canonicalHash])
+  @@index([workspaceId, projectId, reviewState])
+  @@map("source_posts")
+}
+
+model SourcePostMatch {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspaceId  String   @map("workspace_id") @db.Uuid
+  projectId    String   @map("project_id") @db.Uuid
+  sourcePostId String   @map("source_post_id") @db.Uuid
+  topicWatchId String?  @map("topic_watch_id") @db.Uuid
+  score        Float?
+  reason       String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([sourcePostId, topicWatchId])
+  @@map("source_post_matches")
+}
+
+model SourceMetricSnapshot {
+  id           String   @id @default(uuid()) @db.Uuid
+  workspaceId  String   @map("workspace_id") @db.Uuid
+  projectId    String   @map("project_id") @db.Uuid
+  sourcePostId String   @map("source_post_id") @db.Uuid
+  capturedAt   DateTime @default(now()) @map("captured_at")
+  likes        Int?
+  comments     Int?
+  shares       Int?
+  saves        Int?
+  views        Int?
+  score        Float?
+  rawPayload   Json?    @map("raw_payload")
+
+  @@index([sourcePostId, capturedAt])
+  @@map("source_metric_snapshots")
+}
+
+model SourceReview {
+  id            String       @id @default(uuid()) @db.Uuid
+  workspaceId   String       @map("workspace_id") @db.Uuid
+  projectId     String       @map("project_id") @db.Uuid
+  sourcePostId  String       @map("source_post_id") @db.Uuid
+  status        ReviewStatus
+  action        SourceAction
+  reason        String?
+  reviewer      String?      @map("reviewer")
+  objectVersion Int?         @map("object_version")
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  @@index([workspaceId, projectId, sourcePostId])
+  @@map("source_reviews")
+}
+
+model PatternCard {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  projectId      String   @map("project_id") @db.Uuid
+  sourcePostId   String   @map("source_post_id") @db.Uuid
+  currentVersion Int      @default(1) @map("current_version")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([sourcePostId])
+  @@map("pattern_cards")
+}
+
+model PatternCardVersion {
+  id              String   @id @default(uuid()) @db.Uuid
+  workspaceId     String   @map("workspace_id") @db.Uuid
+  projectId       String   @map("project_id") @db.Uuid
+  patternCardId   String   @map("pattern_card_id") @db.Uuid
+  version         Int
+  payload         Json
+  provider        String?
+  providerVersion String?  @map("provider_version")
+  promptVersion   String?  @map("prompt_version")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([patternCardId, version])
+  @@map("pattern_card_versions")
+}
+
+model Idea {
+  id                String     @id @default(uuid()) @db.Uuid
+  workspaceId       String     @map("workspace_id") @db.Uuid
+  projectId         String     @map("project_id") @db.Uuid
+  title             String
+  status            IdeaStatus @default(candidate)
+  format            String
+  currentVersion    Int        @default(1) @map("current_version")
+  generationBatchId String?    @map("generation_batch_id") @db.Uuid
+  createdAt         DateTime   @default(now()) @map("created_at")
+  updatedAt         DateTime   @updatedAt @map("updated_at")
+
+  @@index([workspaceId, projectId, status])
+  @@map("ideas")
+}
+
+model IdeaRevision {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @map("workspace_id") @db.Uuid
+  projectId     String   @map("project_id") @db.Uuid
+  ideaId        String   @map("idea_id") @db.Uuid
+  version       Int
+  hook          String   @default("")
+  copy          String   @default("")
+  videoSpec     Json?    @map("video_spec")
+  assetDecision String?  @map("asset_decision")
+  promptVersion String?  @map("prompt_version")
+  createdBy     String?  @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([ideaId, version])
+  @@map("idea_revisions")
+}
+
+model IdeaSource {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @map("workspace_id") @db.Uuid
+  projectId     String   @map("project_id") @db.Uuid
+  ideaId        String   @map("idea_id") @db.Uuid
+  sourcePostId  String?  @map("source_post_id") @db.Uuid
+  patternCardId String?  @map("pattern_card_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([ideaId])
+  @@map("idea_sources")
+}
+
+model IdeaPlatformTarget {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  projectId   String   @map("project_id") @db.Uuid
+  ideaId      String   @map("idea_id") @db.Uuid
+  platform    String
+  locale      String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([ideaId, platform, locale])
+  @@map("idea_platform_targets")
+}
+
+model ReviewDecision {
+  id            String       @id @default(uuid()) @db.Uuid
+  workspaceId   String       @map("workspace_id") @db.Uuid
+  projectId     String       @map("project_id") @db.Uuid
+  entityType    String       @map("entity_type")
+  entityId      String       @map("entity_id") @db.Uuid
+  status        ReviewStatus
+  reason        String?
+  reviewer      String?
+  objectVersion Int?         @map("object_version")
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  @@index([workspaceId, projectId, entityType, entityId])
+  @@map("review_decisions")
+}
+
+model Asset {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  projectId      String   @map("project_id") @db.Uuid
+  name           String
+  type           String
+  usage          String   @default("")
+  status         String   @default("available")
+  currentVersion Int      @default(1) @map("current_version")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([workspaceId, projectId, status])
+  @@map("assets")
+}
+
+model AssetVersion {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  projectId   String   @map("project_id") @db.Uuid
+  assetId     String   @map("asset_id") @db.Uuid
+  artifactId  String?  @map("artifact_id") @db.Uuid
+  version     Int
+  tags        String[] @default([])
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([assetId, version])
+  @@map("asset_versions")
+}
+
+model Artifact {
+  id              String         @id @default(uuid()) @db.Uuid
+  workspaceId     String         @map("workspace_id") @db.Uuid
+  projectId       String?        @map("project_id") @db.Uuid
+  kind            String
+  storageProvider String         @default("local") @map("storage_provider")
+  storageKey      String         @map("storage_key")
+  originalName    String?        @map("original_name")
+  mimeType        String         @map("mime_type")
+  sizeBytes       BigInt         @map("size_bytes")
+  sha256          String
+  width           Int?
+  height          Int?
+  durationMs      Int?           @map("duration_ms")
+  status          ArtifactStatus @default(pending)
+  metadata        Json?
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  @@unique([storageProvider, storageKey])
+  @@index([workspaceId, projectId, kind, status])
+  @@index([sha256])
+  @@map("artifacts")
+}
+
+model ArtifactLink {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  projectId   String?  @map("project_id") @db.Uuid
+  artifactId  String   @map("artifact_id") @db.Uuid
+  entityType  String   @map("entity_type")
+  entityId    String   @map("entity_id") @db.Uuid
+  role        String
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([artifactId, entityType, entityId, role])
+  @@map("artifact_links")
+}
+
+model CreativeSpec {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  projectId      String   @map("project_id") @db.Uuid
+  ideaId         String   @map("idea_id") @db.Uuid
+  currentVersion Int      @default(1) @map("current_version")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([ideaId])
+  @@map("creative_specs")
+}
+
+model CreativeSpecVersion {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  projectId      String   @map("project_id") @db.Uuid
+  creativeSpecId String   @map("creative_spec_id") @db.Uuid
+  version        Int
+  payload        Json
+  provider       String?
+  promptVersion  String?  @map("prompt_version")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([creativeSpecId, version])
+  @@map("creative_spec_versions")
+}
+
+model GenerationRun {
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  projectId       String    @map("project_id") @db.Uuid
+  ideaId          String?   @map("idea_id") @db.Uuid
+  status          RunStatus @default(queued)
+  provider        String
+  providerVersion String?   @map("provider_version")
+  promptVersion   String?   @map("prompt_version")
+  traceId         String    @map("trace_id")
+  idempotencyKey  String?   @map("idempotency_key")
+  inputSnapshot   Json?     @map("input_snapshot")
+  errorCode       String?   @map("error_code")
+  errorMessage    String?   @map("error_message")
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@unique([workspaceId, idempotencyKey])
+  @@index([workspaceId, projectId, status])
+  @@map("generation_runs")
+}
+
+model GenerationAttempt {
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  projectId       String    @map("project_id") @db.Uuid
+  generationRunId String    @map("generation_run_id") @db.Uuid
+  attemptNo       Int       @map("attempt_no")
+  status          RunStatus
+  providerParams  Json?     @map("provider_params")
+  errorCode       String?   @map("error_code")
+  errorMessage    String?   @map("error_message")
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@unique([generationRunId, attemptNo])
+  @@map("generation_attempts")
+}
+
+model GenerationOutput {
+  id              String   @id @default(uuid()) @db.Uuid
+  workspaceId     String   @map("workspace_id") @db.Uuid
+  projectId       String   @map("project_id") @db.Uuid
+  generationRunId String   @map("generation_run_id") @db.Uuid
+  attemptId       String?  @map("attempt_id") @db.Uuid
+  artifactId      String?  @map("artifact_id") @db.Uuid
+  label           String
+  kind            String
+  version         Int      @default(1)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([generationRunId])
+  @@map("generation_outputs")
+}
+
+model ReleaseBatch {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  projectId   String   @map("project_id") @db.Uuid
+  name        String
+  status      String   @default("draft")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([workspaceId, projectId, status])
+  @@map("release_batches")
+}
+
+model PlatformRendition {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  projectId      String   @map("project_id") @db.Uuid
+  ideaId         String?  @map("idea_id") @db.Uuid
+  releaseBatchId String?  @map("release_batch_id") @db.Uuid
+  platform       String
+  locale         String
+  title          String   @default("")
+  copy           String   @default("")
+  artifactId     String?  @map("artifact_id") @db.Uuid
+  metadata       Json?
+  version        Int      @default(1)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([workspaceId, projectId, platform, locale])
+  @@map("platform_renditions")
+}
+
+model PublicationDraft {
+  id             String            @id @default(uuid()) @db.Uuid
+  workspaceId    String            @map("workspace_id") @db.Uuid
+  projectId      String            @map("project_id") @db.Uuid
+  renditionId    String?           @map("rendition_id") @db.Uuid
+  accountId      String?           @map("account_id") @db.Uuid
+  platform       String
+  status         PublicationStatus @default(draft)
+  scheduledAt    DateTime?         @map("scheduled_at")
+  idempotencyKey String?           @map("idempotency_key")
+  errorCode      String?           @map("error_code")
+  errorMessage   String?           @map("error_message")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  @@unique([workspaceId, idempotencyKey])
+  @@index([workspaceId, projectId, status])
+  @@map("publication_drafts")
+}
+
+model PublicationAttempt {
+  id                 String            @id @default(uuid()) @db.Uuid
+  workspaceId        String            @map("workspace_id") @db.Uuid
+  projectId          String            @map("project_id") @db.Uuid
+  publicationDraftId String            @map("publication_draft_id") @db.Uuid
+  attemptNo          Int               @map("attempt_no")
+  status             PublicationStatus
+  externalRequestId  String?           @map("external_request_id")
+  errorCode          String?           @map("error_code")
+  errorMessage       String?           @map("error_message")
+  evidenceArtifactId String?           @map("evidence_artifact_id") @db.Uuid
+  createdAt          DateTime          @default(now()) @map("created_at")
+
+  @@unique([publicationDraftId, attemptNo])
+  @@map("publication_attempts")
+}
+
+model PublicationReceipt {
+  id                 String    @id @default(uuid()) @db.Uuid
+  workspaceId        String    @map("workspace_id") @db.Uuid
+  projectId          String    @map("project_id") @db.Uuid
+  publicationDraftId String    @map("publication_draft_id") @db.Uuid
+  platformPostId     String?   @map("platform_post_id")
+  canonicalUrl       String?   @map("canonical_url")
+  publishedAt        DateTime? @map("published_at")
+  rawPayload         Json?     @map("raw_payload")
+  createdAt          DateTime  @default(now()) @map("created_at")
+
+  @@index([publicationDraftId])
+  @@map("publication_receipts")
+}
+
+model AgentRun {
+  id                String    @id @default(uuid()) @db.Uuid
+  workspaceId       String    @map("workspace_id") @db.Uuid
+  projectId         String    @map("project_id") @db.Uuid
+  kind              String
+  status            RunStatus @default(queued)
+  provider          String
+  providerVersion   String?   @map("provider_version")
+  promptVersion     String?   @map("prompt_version")
+  traceId           String    @map("trace_id")
+  inputArtifactIds  String[]  @default([]) @map("input_artifact_ids")
+  outputArtifactIds String[]  @default([]) @map("output_artifact_ids")
+  inputSnapshot     Json?     @map("input_snapshot")
+  outputSnapshot    Json?     @map("output_snapshot")
+  errorCode         String?   @map("error_code")
+  errorMessage      String?   @map("error_message")
+  startedAt         DateTime? @map("started_at")
+  completedAt       DateTime? @map("completed_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@index([workspaceId, projectId, status])
+  @@map("agent_runs")
+}
+
+model PipelineRun {
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @map("workspace_id") @db.Uuid
+  projectId       String    @map("project_id") @db.Uuid
+  kind            String
+  status          RunStatus @default(queued)
+  provider        String
+  providerVersion String?   @map("provider_version")
+  promptVersion   String?   @map("prompt_version")
+  traceId         String    @map("trace_id")
+  inputCount      Int       @default(0) @map("input_count")
+  outputCount     Int       @default(0) @map("output_count")
+  note            String    @default("")
+  errorCode       String?   @map("error_code")
+  errorMessage    String?   @map("error_message")
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([workspaceId, projectId, status])
+  @@map("runs")
+}
+
+model RunEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  projectId   String   @map("project_id") @db.Uuid
+  runId       String   @map("run_id") @db.Uuid
+  level       String   @default("info")
+  eventType   String   @map("event_type")
+  message     String
+  payload     Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([runId, createdAt])
+  @@map("run_events")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  projectId   String?  @map("project_id") @db.Uuid
+  actor       String?
+  action      String
+  entityType  String   @map("entity_type")
+  entityId    String   @map("entity_id") @db.Uuid
+  before      Json?
+  after       Json?
+  traceId     String?  @map("trace_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([workspaceId, projectId, createdAt])
+  @@map("audit_logs")
+}
+
+model IdempotencyKey {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @map("workspace_id") @db.Uuid
+  key         String
+  operation   String
+  requestHash String   @map("request_hash")
+  response    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([workspaceId, key, operation])
+  @@map("idempotency_keys")
+}

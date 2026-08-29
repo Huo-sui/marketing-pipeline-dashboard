@@ -1,20 +1,45 @@
-import { useMemo, useState, type ReactNode } from "react";
-import { initialIdeas, initialSourcePosts } from "../data/demoData";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { controlApi } from "../services/controlApi";
 import { DemoState, type DemoStateValue } from "./demoStateContext";
+import type { AccountRecord, AccountSetupInput, AccountSessionStatus, AutomationProfileRecord, IdeaRecord, IdeaStatus, ProjectAccountBinding, ProjectRecord, ProjectSetupInput, ReviewAction, SourcePost, SourceReviewState, TopicWatch } from "../types";
+
+const SELECTED_PROJECT_STORAGE_KEY = "marketing-pipeline.selected-project.v1";
+type WorkspaceState = { projects: ProjectRecord[]; topicWatches: TopicWatch[]; accounts: AccountRecord[]; automationProfiles: AutomationProfileRecord[]; accountBindings: ProjectAccountBinding[] };
+const emptyWorkspace: WorkspaceState = { projects: [], topicWatches: [], accounts: [], automationProfiles: [], accountBindings: [] };
+const LEGACY_WORKSPACE_STORAGE_KEY = "marketing-pipeline.demo.project-workspace.v2";
+const MIGRATION_MARKER_KEY = "marketing-pipeline.demo-workspace.migrated.v1";
+
+function mapRunner(runner: Record<string, unknown>): AutomationProfileRecord { return { id: String(runner.id), accountId: String(runner.accountId), runnerType: runner.runnerType as AutomationProfileRecord["runnerType"], profileName: String(runner.profileName || "未配置"), profileRef: String(runner.profileRef || ""), browserEnvironmentId: typeof runner.browserEnvironmentId === "string" ? runner.browserEnvironmentId : undefined, deviceId: typeof runner.deviceId === "string" ? runner.deviceId : undefined, deviceModel: typeof runner.deviceModel === "string" ? runner.deviceModel : undefined, appPackage: typeof runner.appPackage === "string" ? runner.appPackage : undefined, sessionStatus: (runner.sessionStatus || "login_required") as AccountSessionStatus, lockState: runner.lockState === "busy" ? "busy" : "available", lastVerifiedAt: typeof runner.lastVerifiedAt === "string" ? runner.lastVerifiedAt : undefined, lastHealthCheck: typeof runner.lastHealthCheck === "string" ? runner.lastHealthCheck : undefined }; }
+function withCounts(snapshot: WorkspaceState): WorkspaceState { return { ...snapshot, projects: snapshot.projects.map((project) => { const watches = snapshot.topicWatches.filter((watch) => watch.projectId === project.id); const accountIds = snapshot.accountBindings.filter((binding) => binding.projectId === project.id).map((binding) => binding.accountId); return { ...project, topics: watches.length, cadence: watches[0]?.cadence || "待配置", accountIds: [...new Set(accountIds)] }; }) }; }
 
 export function DemoStateProvider({ children }: { children: ReactNode }) {
-  const [selectedProject, setSelectedProject] = useState("atlas");
-  const [sourcePosts, setSourcePosts] = useState(initialSourcePosts);
-  const [ideas, setIdeas] = useState(initialIdeas);
-
-  const value = useMemo<DemoStateValue>(() => ({
-    selectedProject,
-    setSelectedProject,
-    sourcePosts,
-    ideas,
-    updatePostAction: (id, action) => setSourcePosts((items) => items.map((item) => item.id === id ? { ...item, action } : item)),
-    updateIdeaStatus: (id, status) => setIdeas((items) => items.map((item) => item.id === id ? { ...item, status } : item)),
-  }), [selectedProject, sourcePosts, ideas]);
-
+  const [workspace, setWorkspace] = useState<WorkspaceState>(emptyWorkspace);
+  const [sourcePosts, setSourcePosts] = useState<SourcePost[]>([]);
+  const [ideas, setIdeas] = useState<IdeaRecord[]>([]);
+  const [selectedProject, setSelectedProjectState] = useState(() => window.localStorage.getItem(SELECTED_PROJECT_STORAGE_KEY) || "");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>();
+  const refreshWorkspace = useCallback(async () => { setLoading(true); try { const legacy = window.localStorage.getItem(LEGACY_WORKSPACE_STORAGE_KEY); if (legacy && !window.localStorage.getItem(MIGRATION_MARKER_KEY)) { await controlApi.migrateDemoWorkspace(JSON.parse(legacy)); window.localStorage.setItem(MIGRATION_MARKER_KEY, new Date().toISOString()); } const snapshot = await controlApi.workspace(); const next = withCounts({ projects: snapshot.projects, topicWatches: snapshot.topicWatches, accounts: snapshot.accounts, automationProfiles: snapshot.runners.map(mapRunner), accountBindings: snapshot.bindings }); setWorkspace(next); setError(undefined); setSelectedProjectState((current) => next.projects.some((project) => project.id === current && project.status === "active") ? current : next.projects.find((project) => project.status === "active")?.id || ""); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法加载服务端工作区"); } finally { setLoading(false); } }, []);
+  useEffect(() => { void refreshWorkspace(); }, [refreshWorkspace]);
+  useEffect(() => { if (selectedProject) window.localStorage.setItem(SELECTED_PROJECT_STORAGE_KEY, selectedProject); }, [selectedProject]);
+  useEffect(() => { if (!selectedProject) return; void Promise.all([controlApi.listSourcePosts(selectedProject), controlApi.listIdeas(selectedProject)]).then(([posts, nextIdeas]) => { setSourcePosts(posts); setIdeas(nextIdeas); setError(undefined); }).catch((reason) => setError(reason instanceof Error ? reason.message : "无法加载项目内容")); }, [selectedProject]);
+  const refreshProjectContent = useCallback(async () => { if (!selectedProject) return; try { const [posts, nextIdeas] = await Promise.all([controlApi.listSourcePosts(selectedProject), controlApi.listIdeas(selectedProject)]); setSourcePosts(posts); setIdeas(nextIdeas); setError(undefined); } catch (reason) { setError(reason instanceof Error ? reason.message : "无法加载项目内容"); } }, [selectedProject]);
+  const setSelectedProject = (projectId: string) => { if (workspace.projects.some((project) => project.id === projectId && project.status === "active")) setSelectedProjectState(projectId); };
+  const createProjectBundle = async (input: ProjectSetupInput) => { const created = await controlApi.createProject(input); await refreshWorkspace(); setSelectedProjectState(created.id); return created.id; };
+  const updateProjectBundle = async (projectId: string, input: ProjectSetupInput) => { await controlApi.patchProject(projectId, input.project); const current = workspace.topicWatches.filter((watch) => watch.projectId === projectId); const incoming = new Set(input.trackingRules.map((rule) => rule.id).filter(Boolean)); for (const watch of current) if (!incoming.has(watch.id)) await controlApi.patchTopic(watch.id, { state: "paused" }); for (const rule of input.trackingRules) { if (rule.id) await controlApi.patchTopic(rule.id, rule); else await controlApi.createTopic(projectId, rule); } await refreshWorkspace(); };
+  const setProjectStatus: DemoStateValue["setProjectStatus"] = async (projectId, status) => { if (status === "archived" && workspace.projects.filter((project) => project.status === "active").length <= 1) return false; try { await controlApi.archiveProject(projectId, status); await refreshWorkspace(); return true; } catch (reason) { setError(reason instanceof Error ? reason.message : "项目状态更新失败"); return false; } };
+  const createAccountBundle = async (input: AccountSetupInput) => { const account = await controlApi.createAccount(input); await refreshWorkspace(); return account.id; };
+  const updateAccountBundle = async (accountId: string, input: AccountSetupInput) => { await controlApi.patchAccount(accountId, input); await refreshWorkspace(); };
+  const setAccountLifecycleStatus: DemoStateValue["setAccountLifecycleStatus"] = async (accountId, status) => { try { await controlApi.archiveAccount(accountId, status); await refreshWorkspace(); return true; } catch (reason) { setError(reason instanceof Error ? reason.message : "账号状态更新失败"); return false; } };
+  const setAccountSessionStatus: DemoStateValue["setAccountSessionStatus"] = (accountId, status, healthMessage) => { setWorkspace((current) => ({ ...current, automationProfiles: current.automationProfiles.map((profile) => profile.accountId === accountId ? { ...profile, sessionStatus: status, lastHealthCheck: healthMessage ?? profile.lastHealthCheck } : profile) })); };
+  const confirmAccountIdentity: DemoStateValue["confirmAccountIdentity"] = async (accountId, identity, replaceExisting = false) => { const existing = workspace.accounts.find((account) => account.id === accountId); if (!existing) return false; const differs = existing.externalUserId && identity.externalUserId ? existing.externalUserId !== identity.externalUserId : Boolean(existing.handle && existing.handle.toLowerCase() !== identity.handle.toLowerCase()); if (differs && !replaceExisting) { try { await controlApi.recordIdentityConflict(accountId, identity); await refreshWorkspace(); } catch (reason) { setError(reason instanceof Error ? reason.message : "身份冲突记录保存失败"); } return false; } try { await controlApi.saveIdentityCheck(accountId, identity); await refreshWorkspace(); return true; } catch (reason) { setError(reason instanceof Error ? reason.message : "身份记录保存失败"); return false; } };
+  const updatePostReview = async (ids: string[], state: SourceReviewState) => { await controlApi.reviewSourcePosts(ids, state); setSourcePosts((items) => items.map((item) => ids.includes(item.id) ? { ...item, reviewState: state, action: state === "approved" ? "adapt" : state === "rejected" ? "ignored" : "unreviewed" } : item)); };
+  const updatePostAction = async (id: string, action: ReviewAction) => { await controlApi.reviewSourcePosts([id], action === "ignored" ? "rejected" : "approved"); setSourcePosts((items) => items.map((item) => item.id === id ? { ...item, action } : item)); };
+  const updateIdeaStatus = async (id: string, status: IdeaStatus) => { await controlApi.reviewIdeas([id], status); setIdeas((items) => items.map((item) => item.id === id ? { ...item, status } : item)); };
+  const updateIdea = async (id: string, patch: Partial<IdeaRecord>) => { const updated = await controlApi.patchIdea(id, patch); setIdeas((items) => items.map((item) => item.id === id ? updated : item)); };
+  const addIdeas = (items: IdeaRecord[]) => setIdeas((current) => [...items, ...current]);
+  const updateTopicWatch = async (id: string, patch: Partial<TopicWatch>) => { await controlApi.patchTopic(id, patch); await refreshWorkspace(); };
+  const addTopicWatch = async (watch: TopicWatch) => { await controlApi.createTopic(watch.projectId, watch); await refreshWorkspace(); };
+  const value: DemoStateValue = { selectedProject, setSelectedProject, projects: workspace.projects, accounts: workspace.accounts, automationProfiles: workspace.automationProfiles, accountBindings: workspace.accountBindings, sourcePosts, ideas, topicWatches: workspace.topicWatches, loading, error, refreshWorkspace, refreshProjectContent, updatePostAction, updatePostReview, updateIdeaStatus, updateIdea, addIdeas, updateTopicWatch, addTopicWatch, createProjectBundle, updateProjectBundle, setProjectStatus, createAccountBundle, updateAccountBundle, setAccountLifecycleStatus, setAccountSessionStatus, confirmAccountIdentity };
   return <DemoState.Provider value={value}>{children}</DemoState.Provider>;
 }

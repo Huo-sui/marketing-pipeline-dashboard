@@ -3,36 +3,63 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "dev:local": "vite --host 127.0.0.1 --port 3210 --strictPort",
+    "setup": "node scripts/setup.mjs",
+    "start": "node scripts/start.mjs",
+    "start:windows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/Start-MarketingPipeline.ps1",
+    "startup:register": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/Register-MarketingPipelineStartup.ps1",
+    "phone:install": "node scripts/install-phone-toolchain.mjs",
+    "phone:doctor": "node scripts/phone-doctor.mjs",
+    "phone:doctor:json": "node scripts/phone-doctor.mjs --json",
+    "health": "node scripts/healthcheck.mjs",
+    "audit:privacy": "node scripts/privacy-audit.mjs",
+    "db:generate": "prisma generate",
+    "db:validate": "prisma validate",
+    "db:migrate": "prisma migrate deploy",
+    "test:unit": "node --test server/scoring/robustAnomaly.test.ts server/platforms/xiaohongshuPhoneAdapter.test.ts",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "check": "npm run lint && npm run build && npm audit --audit-level=high",
-    "preview": "vite preview"
+    "check": "npm run audit:privacy && npm run lint && npm run test:unit && npm run build && npm audit --audit-level=high",
+    "preview": "vite preview --host 127.0.0.1 --port 3210 --strictPort"
   },
   "dependencies": {
     "@ant-design/v5-patch-for-react-19": "^1.0.3",
+    "@prisma/client": "^6.19.0",
     "@refinedev/antd": "^6.0.3",
     "@refinedev/core": "^5.0.12",
     "@refinedev/react-router": "^2.0.4",
     "antd": "^5.29.3",
+    "busboy": "^1.6.0",
     "lucide-react": "^1.31.0",
+    "playwright-core": "^1.62.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router": "7.18.2",
     "recharts": "^3.10.1"
   },
   "devDependencies": {
+    "@types/busboy": "^1.5.4",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
+    "appium": "^3.7.0",
+    "appium-uiautomator2-driver": "^8.5.0",
     "oxlint": "^1.75.0",
+    "prisma": "^6.19.0",
     "typescript": "~6.0.2",
     "vite": "^8.2.0"
   },
   "overrides": {
-    "path-to-regexp": "8.4.0"
+    "path-to-regexp": "8.4.0",
+    "deepmerge-ts": "8.0.1",
+    "effect": "3.22.1"
   }
 }

@@ -1,23 +1,10 @@
-import { Button, Checkbox, message } from "antd";
-import { CalendarClock, Send } from "lucide-react";
-import { useState } from "react";
+import { Alert, Button, Tag, message } from "antd";
+import { Eye, RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
 import { PageHeader, Panel, PlatformBadge } from "../components/Shared";
+import { controlApi } from "../services/controlApi";
 import type { Platform } from "../types";
 
-const items = [
-  { id: "release-01", title: "机制误读时间轴", type: "视频 · 00:18", image: "https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=480&q=80", defaults: ["TikTok", "抖音"] as Platform[] },
-  { id: "release-02", title: "第一屏信息层级", type: "图文 · 6 张", image: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=480&q=80", defaults: ["小红书", "X"] as Platform[] },
-  { id: "release-03", title: "命中反馈前后对比", type: "视频 · 00:24", image: "https://images.unsplash.com/photo-1552820728-8b83bb6b773f?auto=format&fit=crop&w=480&q=80", defaults: ["Reddit"] as Platform[] },
-];
-const platforms: Platform[] = ["TikTok", "抖音", "小红书", "Reddit", "X", "Instagram"];
-
-export function ReleasePage() {
-  const [selected, setSelected] = useState<Record<string, Platform[]>>(Object.fromEntries(items.map((item) => [item.id, item.defaults])));
-  const [messageApi, contextHolder] = message.useMessage();
-  const versions = Object.values(selected).reduce((sum, values) => sum + values.length, 0);
-  return <>{contextHolder}<PageHeader title="发布中心" meta="批量验收平台版本并创建 Release" actions={<Button icon={<CalendarClock size={15} />}>排期视图</Button>} />
-    <div className="release-layout"><Panel title="Release Batch #DEMO-014" caption={`${items.length} 条内容 · ${versions} 个平台版本`}><div className="release-list">{items.map((item) => <div className="release-row" key={item.id}><img className="release-preview" src={item.image} alt="Demo Seed 发布预览" /><div><div className="job-name">{item.title}</div><div className="job-sub">{item.type}</div></div><Checkbox.Group value={selected[item.id]} onChange={(values) => setSelected((state) => ({ ...state, [item.id]: values as Platform[] }))}><div className="platform-checks">{platforms.map((platform) => <Checkbox key={platform} value={platform}><PlatformBadge platform={platform} /></Checkbox>)}</div></Checkbox.Group></div>)}</div></Panel>
-      <Panel title="批次摘要" caption="提交前核对"><div className="summary-list"><div className="summary-row"><span className="muted">内容</span><strong>{items.length}</strong></div><div className="summary-row"><span className="muted">平台版本</span><strong>{versions}</strong></div><div className="summary-row"><span className="muted">中文版本</span><strong>4</strong></div><div className="summary-row"><span className="muted">English 版本</span><strong>{Math.max(0, versions - 4)}</strong></div><div className="summary-divider" /><div className="summary-row"><span className="muted">Publisher</span><strong>未接入</strong></div><Button type="primary" size="large" block icon={<Send size={15} />} onClick={() => messageApi.warning("Publisher 尚未接入；批次已保留在本地 Demo 状态")}>批准 Release</Button></div></Panel>
-    </div>
-  </>;
-}
+type Draft = { id: string; platform: Platform; accountId?: string; status: "draft" | "approved" | "submitting" | "succeeded" | "failed_retryable" | "unknown_requires_review"; errorCode?: string; createdAt?: string };
+const statusMap: Record<Draft["status"], { label: string; color: string }> = { draft: { label: "草稿", color: "default" }, approved: { label: "已审批", color: "blue" }, submitting: { label: "提交中", color: "gold" }, succeeded: { label: "已发布", color: "green" }, failed_retryable: { label: "可重试失败", color: "red" }, unknown_requires_review: { label: "需要人工核查", color: "orange" } };
+export function ReleasePage() { const [drafts, setDrafts] = useState<Draft[]>([]); const [messageApi, contextHolder] = message.useMessage(); const refresh = () => void controlApi.listPublicationDrafts().then((items) => setDrafts(items as Draft[])).catch((error: Error) => messageApi.error(error.message)); useEffect(refresh, [messageApi]); const act = (draft: Draft) => void (draft.status === "draft" ? controlApi.approvePublicationDraft(draft.id) : controlApi.executePublicationDraft(draft.id)).then(refresh).catch((error: Error) => messageApi.error(error.message)); return <>{contextHolder}<PageHeader title="发布执行" meta="只执行生成层确认的 PublicationDraft，并保留真实回执状态" actions={<Button icon={<RefreshCw size={15} />} onClick={refresh}>刷新状态</Button>} /><Alert className="section-alert" type="warning" showIcon message="Publisher 尚未配置时不会产生成功记录；执行结果会明确记录为失败或需要人工核查。" /><div className="release-layout"><Panel title="Publisher 执行队列" caption="PostgreSQL PublicationDraft"><div className="execution-list">{drafts.length === 0 ? <div className="empty-state">当前没有 PublicationDraft</div> : drafts.map((draft) => <div className="execution-row" key={draft.id}><div className="execution-primary"><div className="job-name">{draft.id}</div><div className="job-sub">{draft.createdAt || "—"}</div></div><div className="execution-fact"><span>平台</span><PlatformBadge platform={draft.platform} /></div><div className="execution-fact"><span>账号</span><strong>{draft.accountId || "未指定"}</strong></div><div className="execution-fact"><span>状态</span><Tag color={statusMap[draft.status].color}>{statusMap[draft.status].label}</Tag></div><div className="execution-fact"><span>错误</span><strong>{draft.errorCode || "—"}</strong></div><Button aria-label={`处理 ${draft.id}`} icon={<Eye size={14} />} disabled={draft.status !== "draft" && draft.status !== "approved"} onClick={() => act(draft)} /></div>)}</div></Panel><Panel title="执行边界" caption="Publisher Contract"><div className="summary-list"><div className="summary-row"><span className="muted">输入</span><strong>Approved Draft</strong></div><div className="summary-row"><span className="muted">平台 / 账号改写</span><strong>禁止</strong></div><div className="summary-divider" /><div className="job-sub">未配置 Provider 时，执行按钮只会写入明确失败状态，不会伪造外部帖子 ID。</div></div></Panel></div></>; }

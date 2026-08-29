@@ -9,10 +9,26 @@ lerna-debug.log*
 
 node_modules
 dist
+# Local runtime state can contain account handles, UI hierarchies, cookies,
+# uploaded assets, downloaded Android tooling, and device identifiers.
+data/*
+!data/.gitkeep
+.env
+.env.*
+!.env.example
 dist-ssr
 *.local
 output/
 .playwright-cli/
+data/playwright-profiles/
+data/browser-profiles/
+
+# Local debugging and third-party downloads must never be published.
+tmp-*/
+tmp-*.png
+*.apk
+tools/android-platform-tools/
+research/
 
 # Editor directories and files
 .vscode/*

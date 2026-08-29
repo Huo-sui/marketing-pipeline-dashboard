@@ -3,7 +3,7 @@ import type {
   DeleteOneResponse, GetListParams, GetListResponse, GetOneParams, GetOneResponse,
   UpdateParams, UpdateResponse,
 } from "@refinedev/core";
-import { accounts, generationJobs, initialIdeas, initialSourcePosts, projects, topics } from "./demoData";
+import { accounts, assets, generationJobs, initialIdeas, initialSourcePosts, projects, runs, topics } from "./demoData";
 
 const resources: Record<string, BaseRecord[]> = {
   projects,
@@ -12,6 +12,8 @@ const resources: Record<string, BaseRecord[]> = {
   ideas: initialIdeas,
   generation: generationJobs,
   accounts,
+  assets,
+  runs,
 };
 
 const collection = (resource: string) => resources[resource] ?? [];
