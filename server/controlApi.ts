@@ -1,5 +1,5 @@
 import Busboy from "busboy";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { Plugin } from "vite";
@@ -12,6 +12,10 @@ import { emptyPlatformDiscovery, getPlatformAdapter, listPlatformAdapters, platf
 import { engagementAgeBucket, scorePositiveEngagementOutlier } from "./scoring/robustAnomaly.js";
 import { LocalArtifactStorage, ArtifactStorageError, validateArtifactName } from "./storage/LocalArtifactStorage.js";
 import { numberInput, objectInput, optionalString, requiredString, stringArray, uuidParam, ValidationError } from "./validation/input.js";
+import { createInsight, getSourceAnalysisContext, listInsights, patchInsight, saveSourceAnalysis, type InsightEvidenceType, type InsightKind } from "./workflows/topicWorkbench.js";
+import { createContentDraft, listContentDrafts, patchContentDraft, reviewContentDraft } from "./workflows/contentDraftWorkflow.js";
+import { approvePublicationDraft, executePublicationDraft } from "./workflows/publicationWorkflow.js";
+import { validateAnalysisPayload } from "./workflows/viralAnalysisContract.js";
 
 const BASE = "/api/v1";
 const storage = new LocalArtifactStorage();
@@ -164,8 +168,12 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
         if (missing.length) throw new Error(`${topic.platform} Adapter 违反采集字段合同：${post.externalId || "未知候选"} 缺少 ${missing.join("、")}`);
       }
       const capturedPosts = discovery.posts;
+      const excludes = topic.excludeTerms.map((term) => term.trim().toLocaleLowerCase()).filter(Boolean);
       const qualificationLogs = capturedPosts.flatMap((post) => {
         const reasons: string[] = [];
+        const searchable = `${post.title}\n${post.author}\n${post.term}`.toLocaleLowerCase();
+        const matchedExclude = excludes.find((term) => searchable.includes(term));
+        if (matchedExclude) reasons.push(`命中排除词：${matchedExclude}`);
         if (post.likes < topic.minLikes) reasons.push(`点赞 ${post.likes} < ${topic.minLikes}`);
         if (post.comments < topic.minComments) reasons.push(`评论 ${post.comments} < ${topic.minComments}`);
         if (post.publishedAt) {
@@ -194,7 +202,7 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
     const startedAt = new Date();
     const status = errorCode ? "failed" : "completed";
     const adapterProvider = getPlatformAdapter(topic.platform)?.id ?? `${topic.platform.toLowerCase()}-unregistered`;
-    const collection = await tx.collectionRun.create({ data: { workspaceId: workspace.id, projectId: topic.projectId, topicWatchId: topic.id, provider: adapterProvider, traceId, inputSnapshot: normalizeJson({ topicWatchId, terms: topic.terms, platform: topic.platform, preflight }), status, errorCode: errorCode || undefined, errorMessage: errorMessage || undefined, startedAt, completedAt: new Date() } });
+    const collection = await tx.collectionRun.create({ data: { workspaceId: workspace.id, projectId: topic.projectId, topicWatchId: topic.id, provider: adapterProvider, traceId, inputSnapshot: normalizeJson({ topicWatchId, terms: topic.terms, excludeTerms: topic.excludeTerms, platform: topic.platform, thresholds: { minLikes: topic.minLikes, minComments: topic.minComments, maxAgeHours: topic.maxAgeHours, minScore: topic.minScore }, preflight }), status, errorCode: errorCode || undefined, errorMessage: errorMessage || undefined, startedAt, completedAt: new Date() } });
     let outputCount = 0;
     if (!errorCode) {
       const baselineSince = new Date(startedAt.getTime() - topic.anomalyBaselineDays * 86_400_000);
@@ -227,12 +235,13 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
           : anomaly?.state === "normal" ? `达到硬阈值；相对异常正常（z=${anomaly.score.toFixed(2)}）`
           : anomaly?.state === "missing_published_at" ? "达到硬阈值；缺少发布时间，未计算相对异常"
           : score >= topic.minScore ? "达到硬阈值" : "未达到硬阈值";
-        const source = await tx.sourcePost.upsert({ where: { platform_externalId: { platform: topic.platform, externalId: post.externalId } }, create: { workspaceId: workspace.id, projectId: topic.projectId, platform: topic.platform, externalId: post.externalId, canonicalUrl: post.canonicalUrl, canonicalHash: post.canonicalUrl, author: post.author, title: post.title, publishedAt: post.publishedAt ? new Date(post.publishedAt) : undefined, mediaType: post.mediaType, rawPayload: normalizeJson(post.rawPayload) }, update: { projectId: topic.projectId, canonicalUrl: post.canonicalUrl, author: post.author, title: post.title, publishedAt: post.publishedAt ? new Date(post.publishedAt) : undefined, mediaType: post.mediaType, rawPayload: normalizeJson(post.rawPayload) } });
+        const canonicalHash = createHash("md5").update(post.canonicalUrl).digest("hex");
+        const source = await tx.sourcePost.upsert({ where: { projectId_platform_externalId: { projectId: topic.projectId, platform: topic.platform, externalId: post.externalId } }, create: { workspaceId: workspace.id, projectId: topic.projectId, platform: topic.platform, externalId: post.externalId, canonicalUrl: post.canonicalUrl, canonicalHash, author: post.author, title: post.title, publishedAt: post.publishedAt ? new Date(post.publishedAt) : undefined, mediaType: post.mediaType, rawPayload: normalizeJson(post.rawPayload) }, update: { canonicalUrl: post.canonicalUrl, canonicalHash, author: post.author, title: post.title, publishedAt: post.publishedAt ? new Date(post.publishedAt) : undefined, mediaType: post.mediaType, rawPayload: normalizeJson(post.rawPayload) } });
         await tx.sourceMetricSnapshot.create({ data: { workspaceId: workspace.id, projectId: topic.projectId, sourcePostId: source.id, likes: post.likes, comments: post.comments, score, rawPayload: normalizeJson({ term: post.term, anomaly }) } });
         await tx.sourcePostMatch.upsert({ where: { sourcePostId_topicWatchId: { sourcePostId: source.id, topicWatchId: topic.id } }, create: { workspaceId: workspace.id, projectId: topic.projectId, sourcePostId: source.id, topicWatchId: topic.id, score, reason }, update: { score, reason } });
         outputCount += 1;
         if (anomaly) discovery.logs.push({ timestamp: new Date().toISOString(), level: "info", eventType: "anomaly_assessed", message: reason, term: post.term, payload: { externalId: post.externalId, platform: topic.platform, term: post.term, publicationAgeBucket: candidateBucket, cohortSize: anomaly.cohortSize, anomaly } });
-        discovery.logs.push({ timestamp: new Date().toISOString(), level: "info", eventType: "source_post_stored", message: `合格帖子已写入爆帖收件箱：${post.externalId}`, payload: { sourcePostId: source.id, externalId: post.externalId, score } });
+        discovery.logs.push({ timestamp: new Date().toISOString(), level: "info", eventType: "source_post_stored", message: `合格帖子已写入爆帖分析池：${post.externalId}`, payload: { sourcePostId: source.id, externalId: post.externalId, score } });
       }
     }
     const audit = await tx.pipelineRun.create({ data: { workspaceId: workspace.id, projectId: topic.projectId, kind: "抓取", status, provider: adapterProvider, traceId, inputCount: topic.terms.length, outputCount, note: errorMessage || `${topic.platform} Discovery 完成，读取 ${outputCount} 条帖子；详情见运行日志`, errorCode: errorCode || undefined, errorMessage: errorMessage || undefined, startedAt, completedAt: new Date() } });
@@ -371,8 +380,12 @@ async function listSourcePosts(request: IncomingMessage, response: ServerRespons
   const posts = await db.sourcePost.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { capturedAt: "desc" } });
   const metrics = await db.sourceMetricSnapshot.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { capturedAt: "desc" } });
   const matches = await db.sourcePostMatch.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { createdAt: "desc" } });
+  const patternCards = await db.patternCard.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) } });
+  const patternVersions = patternCards.length ? await db.patternCardVersion.findMany({ where: { workspaceId: workspace.id, patternCardId: { in: patternCards.map((card) => card.id) } }, orderBy: { version: "desc" } }) : [];
   const latest = new Map<string, typeof metrics[number]>(); for (const metric of metrics) if (!latest.has(metric.sourcePostId)) latest.set(metric.sourcePostId, metric);
   const latestMatch = new Map<string, typeof matches[number]>(); for (const match of matches) if (!latestMatch.has(match.sourcePostId)) latestMatch.set(match.sourcePostId, match);
+  const cardBySource = new Map(patternCards.map((card) => [card.sourcePostId, card]));
+  const latestPattern = new Map<string, typeof patternVersions[number]>(); for (const version of patternVersions) if (!latestPattern.has(version.patternCardId)) latestPattern.set(version.patternCardId, version);
   json(response, 200, posts.map((post) => {
     const metric = latest.get(post.id);
     const match = latestMatch.get(post.id);
@@ -386,36 +399,358 @@ async function listSourcePosts(request: IncomingMessage, response: ServerRespons
     ];
     const likes = metric?.likes ?? 0;
     const comments = metric?.comments ?? 0;
-    return { ...post, likes, comments, score: metric?.score ?? 0, reason: match?.reason ?? "未匹配话题规则", topic: typeof raw.term === "string" ? raw.term : "", capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", evidence: { signals, scoreBreakdown: [{ label: "点赞", value: likes.toLocaleString("zh-CN") }, { label: "评论", value: comments.toLocaleString("zh-CN") }, { label: "评论率", value: likes > 0 ? `${(comments / likes * 100).toFixed(2)}%` : "—" }], capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", capturedAt: metric?.capturedAt ?? post.capturedAt } };
+    const card = cardBySource.get(post.id);
+    const pattern = card ? latestPattern.get(card.id) : undefined;
+    return { id: post.id, workspaceId: post.workspaceId, projectId: post.projectId, platform: post.platform, externalId: post.externalId, canonicalUrl: post.canonicalUrl, author: post.author, title: post.title, publishedAt: post.publishedAt, capturedAt: post.capturedAt, mediaType: post.mediaType, reviewState: post.reviewState, action: post.action, createdAt: post.createdAt, updatedAt: post.updatedAt, likes, comments, score: metric?.score ?? 0, reason: match?.reason ?? "未匹配话题规则", topic: typeof raw.term === "string" ? raw.term : "", capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", patternCard: pattern?.payload, patternCardVersion: pattern?.version, evidence: { signals, scoreBreakdown: [{ label: "点赞", value: likes.toLocaleString("zh-CN") }, { label: "评论", value: comments.toLocaleString("zh-CN") }, { label: "评论率", value: likes > 0 ? `${(comments / likes * 100).toFixed(2)}%` : "—" }], capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", capturedAt: metric?.capturedAt ?? post.capturedAt } };
   }));
 }
 
 async function reviewSourcePosts(request: IncomingMessage, response: ServerResponse) {
-  const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const ids = stringArray(input.ids ?? [], "ids"); const status = input.status === "approved" ? "approved" : input.status === "rejected" ? "rejected" : "pending";
-  const result = await db.$transaction(async (tx) => { const posts = await tx.sourcePost.findMany({ where: { id: { in: ids }, workspaceId: workspace.id } }); if (posts.length !== ids.length) throw new ValidationError("部分帖子不存在或不属于当前 Workspace"); for (const post of posts) { await tx.sourcePost.update({ where: { id: post.id }, data: { reviewState: status, action: status === "approved" ? "adapt" : status === "rejected" ? "ignored" : "unreviewed" } }); await tx.sourceReview.create({ data: { workspaceId: workspace.id, projectId: post.projectId, sourcePostId: post.id, status, action: status === "approved" ? "adapt" : status === "rejected" ? "ignored" : "unreviewed", reason: optionalString(input.reason, "reason", 1000), reviewer: "dashboard" } }); }
+  const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId"); const ids = stringArray(input.ids ?? [], "ids").map((id) => uuidParam(id, "sourcePostId")); const status = input.status === "approved" ? "approved" : input.status === "rejected" ? "rejected" : "pending";
+  const result = await db.$transaction(async (tx) => { const posts = await tx.sourcePost.findMany({ where: { id: { in: ids }, workspaceId: workspace.id, projectId } }); if (posts.length !== ids.length) throw new ValidationError("部分帖子不存在或不属于当前项目"); for (const post of posts) { await tx.sourcePost.update({ where: { id: post.id }, data: { reviewState: status, action: status === "approved" ? "adapt" : status === "rejected" ? "ignored" : "unreviewed" } }); await tx.sourceReview.create({ data: { workspaceId: workspace.id, projectId: post.projectId, sourcePostId: post.id, status, action: status === "approved" ? "adapt" : status === "rejected" ? "ignored" : "unreviewed", reason: optionalString(input.reason, "reason", 1000), reviewer: "dashboard" } }); }
     return posts.length;
   }); json(response, 200, { updated: result });
 }
 
-function ideaPayload(idea: Record<string, unknown>, revision?: Record<string, unknown>, sources: string[] = [], targets: string[] = []) { return { ...idea, hook: revision?.hook || "", copy: revision?.copy || "", videoPrompt: revision?.videoSpec && typeof revision.videoSpec === "object" ? (revision.videoSpec as Record<string, unknown>).prompt : undefined, source: sources[0] || "", sourcePostIds: sources, platforms: targets, updatedAt: idea.updatedAt }; }
+function insightKind(value: unknown): InsightKind {
+  if (value === "inspiration" || value === "pain_point" || value === "feedback") return value;
+  throw new ValidationError("kind 必须是 inspiration、pain_point 或 feedback");
+}
+
+function insightEvidenceType(value: unknown): InsightEvidenceType {
+  if (value === "post" || value === "comment" || value === "inference") return value;
+  throw new ValidationError("evidenceType 必须是 post、comment 或 inference");
+}
+
+function editableString(value: unknown, field: string, maxLength: number) {
+  if (typeof value !== "string") throw new ValidationError(`${field} 必须是字符串`);
+  if (value.length > maxLength) throw new ValidationError(`${field} 长度不能超过 ${maxLength}`);
+  return value.trim();
+}
+
+function reviewStatus(value: unknown) {
+  if (value === "pending" || value === "approved" || value === "rejected") return value;
+  throw new ValidationError("status 必须是 pending、approved 或 rejected");
+}
+
+function nestedEvidenceIds(payload: Record<string, unknown>) {
+  const topicCandidates = Array.isArray(payload.topicCandidates) ? payload.topicCandidates.map(objectInput) : [];
+  const insights = Array.isArray(payload.insights) ? payload.insights.map(objectInput) : [];
+  return {
+    assetIds: [...new Set(topicCandidates.flatMap((candidate) => stringArray(candidate.assetIds ?? [], "topicCandidates.assetIds")))],
+    commentIds: [...new Set(insights.flatMap((insight) => stringArray(insight.commentIds ?? [], "insights.commentIds")))],
+  };
+}
+
+async function analysisContext(_request: IncomingMessage, response: ServerResponse, sourcePostId: string) {
+  const { db, workspace } = await currentWorkspace();
+  uuidParam(sourcePostId, "sourcePostId");
+  json(response, 200, await getSourceAnalysisContext(db, workspace.id, sourcePostId));
+}
+
+async function saveAnalysis(request: IncomingMessage, response: ServerResponse, sourcePostId: string) {
+  const { db, workspace } = await currentWorkspace();
+  uuidParam(sourcePostId, "sourcePostId");
+  const input = objectInput(await bodyJson(request));
+  const payload = validateAnalysisPayload(input.analysis === undefined ? input : input.analysis);
+  const context = await getSourceAnalysisContext(db, workspace.id, sourcePostId);
+  const evidenceIds = nestedEvidenceIds(payload);
+  const allowedAssets = new Set(context.assets.map((asset) => asset.id));
+  const allowedComments = new Set(context.comments.map((comment) => comment.id));
+  if (evidenceIds.assetIds.some((id) => !allowedAssets.has(id))) throw new ValidationError("分析引用了不属于当前项目的资产");
+  if (evidenceIds.commentIds.some((id) => !allowedComments.has(id))) throw new ValidationError("分析引用了未存储的评论证据");
+  const saved = await saveSourceAnalysis(db, workspace.id, sourcePostId, payload, {
+    provider: optionalString(input.provider, "provider", 200) ?? "codex-skill",
+    providerVersion: optionalString(input.providerVersion, "providerVersion", 200),
+    promptVersion: optionalString(input.promptVersion, "promptVersion", 200) ?? "viral-topic-analysis/v1",
+  });
+  json(response, 200, saved);
+}
+
+async function runCommentCollection(request: IncomingMessage, response: ServerResponse, sourcePostId: string) {
+  const { db, workspace } = await currentWorkspace();
+  uuidParam(sourcePostId, "sourcePostId");
+  const input = objectInput(await bodyJson(request));
+  const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId");
+  const accountId = uuidParam(typeof input.accountId === "string" ? input.accountId : undefined, "accountId");
+  const limit = Math.round(numberInput(input.limit, "limit", 100, 1, 500));
+  const source = await db.sourcePost.findFirst({ where: { id: sourcePostId, workspaceId: workspace.id, projectId } });
+  if (!source) throw new ValidationError("来源帖不存在或不属于当前项目");
+  const adapter = getPlatformAdapter(source.platform);
+  const status = adapter?.status();
+  if (!adapter?.collectComments || !status?.capabilities.commentCollection) throw new ValidationError(`${source.platform} Adapter 未声明评论采集能力`);
+  const binding = await db.projectAccountBinding.findFirst({ where: { projectId, accountId, workspaceId: workspace.id, roles: { hasSome: ["discovery", "engagement"] } } });
+  if (!binding) throw new ValidationError("所选账号没有当前项目的 Discovery 或 Engagement 角色");
+  const account = await db.socialAccount.findFirst({ where: { id: accountId, workspaceId: workspace.id, platform: source.platform, lifecycleStatus: "active" } });
+  if (!account) throw new ValidationError("评论采集账号不存在、已归档或平台不匹配");
+  const requirements = status.commentCollection?.requirements ?? status.requirements;
+  if (requirements.confirmedIdentity && !account.identityConfirmedAt) throw new ValidationError("评论采集账号身份尚未确认");
+  const runner = await db.accountRunner.findFirst({ where: { accountId, workspaceId: workspace.id } });
+  if (requirements.phoneRunner && (!runner || runner.sessionStatus !== "healthy" || !runner.deviceId || !runner.appPackage)) throw new ValidationError("评论采集需要健康且已绑定设备与 App 的手机 Runner");
+  const traceId = randomUUID();
+  const agentRun = await db.agentRun.create({ data: { workspaceId: workspace.id, projectId, kind: "comment-collection", status: "running", provider: adapter.id, traceId, inputSnapshot: { sourcePostId, accountId, limit }, startedAt: new Date() } });
+  try {
+    const result = await adapter.collectComments(accountId, { externalId: source.externalId, canonicalUrl: source.canonicalUrl }, limit, runner?.deviceId ?? undefined);
+    const normalized = result.comments.slice(0, limit).map((comment, index) => {
+      const body = requiredString(comment.body, `comments[${index}].body`, 10_000);
+      const author = optionalString(comment.author, `comments[${index}].author`, 300) ?? "";
+      const externalId = optionalString(comment.externalId, `comments[${index}].externalId`, 300);
+      const likes = comment.likes === undefined ? undefined : Math.round(numberInput(comment.likes, `comments[${index}].likes`, 0, 0));
+      const publishedAt = comment.publishedAt ? new Date(comment.publishedAt) : undefined;
+      if (publishedAt && Number.isNaN(publishedAt.getTime())) throw new ValidationError(`comments[${index}].publishedAt 不是有效时间`);
+      const evidenceHash = createHash("sha256").update([externalId ?? "", author, body, publishedAt?.toISOString() ?? ""].join("\0")).digest("hex");
+      return { body, author, externalId, likes, publishedAt, evidenceHash };
+    });
+    const saved = await db.$transaction(async (tx) => {
+      const comments = [];
+      for (const comment of normalized) comments.push(await tx.sourceComment.upsert({ where: { sourcePostId_evidenceHash: { sourcePostId, evidenceHash: comment.evidenceHash } }, create: { workspaceId: workspace.id, projectId, sourcePostId, ...comment, rawPayload: { collector: adapter.id } }, update: { externalId: comment.externalId, author: comment.author, body: comment.body, likes: comment.likes, publishedAt: comment.publishedAt, capturedAt: new Date(), rawPayload: { collector: adapter.id } } }));
+      await tx.agentRun.update({ where: { id: agentRun.id }, data: { status: "completed", outputSnapshot: { sourcePostId, commentIds: comments.map((comment) => comment.id), count: comments.length }, completedAt: new Date() } });
+      await tx.auditLog.create({ data: { workspaceId: workspace.id, projectId, actor: "control-api", action: "source_comments.collected", entityType: "source_post", entityId: sourcePostId, after: { count: comments.length, provider: adapter.id }, traceId } });
+      return comments;
+    });
+    json(response, 200, { runId: agentRun.id, traceId, comments: saved.map((comment) => ({ id: comment.id, body: comment.body, likes: comment.likes, publishedAt: comment.publishedAt, capturedAt: comment.capturedAt })) });
+  } catch (error) {
+    await db.agentRun.update({ where: { id: agentRun.id }, data: { status: "failed", errorCode: error instanceof ValidationError ? error.code : "COMMENT_COLLECTION_FAILED", errorMessage: error instanceof Error ? error.message.slice(0, 2000) : "评论采集失败", completedAt: new Date() } });
+    throw error;
+  }
+}
+
+async function listInsightRecords(request: IncomingMessage, response: ServerResponse) {
+  const { db, workspace } = await currentWorkspace();
+  const projectId = new URL(request.url ?? "", "http://127.0.0.1").searchParams.get("projectId") ?? undefined;
+  if (projectId) uuidParam(projectId, "projectId");
+  json(response, 200, await listInsights(db, workspace.id, projectId));
+}
+
+async function createInsightRecord(request: IncomingMessage, response: ServerResponse) {
+  const { db, workspace } = await currentWorkspace();
+  const input = objectInput(await bodyJson(request));
+  const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId");
+  const record = await createInsight(db, workspace.id, {
+    projectId,
+    sourcePostId: input.sourcePostId === undefined ? undefined : uuidParam(typeof input.sourcePostId === "string" ? input.sourcePostId : undefined, "sourcePostId"),
+    ideaId: input.ideaId === undefined ? undefined : uuidParam(typeof input.ideaId === "string" ? input.ideaId : undefined, "ideaId"),
+    kind: insightKind(input.kind),
+    title: requiredString(input.title, "title", 300),
+    detail: requiredString(input.detail, "detail", 5000),
+    evidenceType: insightEvidenceType(input.evidenceType ?? "inference"),
+    commentIds: stringArray(input.commentIds ?? [], "commentIds").map((id) => uuidParam(id, "commentId")),
+    status: input.status === undefined ? "pending" : reviewStatus(input.status),
+    createdBy: optionalString(input.createdBy, "createdBy", 100) ?? "dashboard",
+  });
+  json(response, 201, record);
+}
+
+async function patchInsightRecord(request: IncomingMessage, response: ServerResponse, insightId: string) {
+  const { db, workspace } = await currentWorkspace();
+  uuidParam(insightId, "insightId");
+  const input = objectInput(await bodyJson(request));
+  const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId");
+  const record = await patchInsight(db, workspace.id, projectId, insightId, {
+    sourcePostId: input.sourcePostId === undefined ? undefined : uuidParam(typeof input.sourcePostId === "string" ? input.sourcePostId : undefined, "sourcePostId"),
+    ideaId: input.ideaId === undefined ? undefined : uuidParam(typeof input.ideaId === "string" ? input.ideaId : undefined, "ideaId"),
+    kind: input.kind === undefined ? undefined : insightKind(input.kind),
+    title: input.title === undefined ? undefined : requiredString(input.title, "title", 300),
+    detail: input.detail === undefined ? undefined : requiredString(input.detail, "detail", 5000),
+    evidenceType: input.evidenceType === undefined ? undefined : insightEvidenceType(input.evidenceType),
+    commentIds: input.commentIds === undefined ? undefined : stringArray(input.commentIds, "commentIds").map((id) => uuidParam(id, "commentId")),
+    status: input.status === undefined ? undefined : reviewStatus(input.status),
+  });
+  json(response, 200, record);
+}
+
+async function createContentDraftRecord(request: IncomingMessage, response: ServerResponse) {
+  const { db, workspace } = await currentWorkspace();
+  const input = objectInput(await bodyJson(request));
+  const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId");
+  const ideaId = uuidParam(typeof input.ideaId === "string" ? input.ideaId : undefined, "ideaId");
+  const record = await createContentDraft(db, workspace.id, {
+    projectId,
+    ideaId,
+    title: input.title === undefined ? undefined : requiredString(input.title, "title", 300),
+    copy: input.copy === undefined ? undefined : editableString(input.copy, "copy", 20_000),
+    format: input.format === undefined ? undefined : requiredString(input.format, "format", 50),
+    assetStrategy: input.assetStrategy === undefined ? undefined : requiredString(input.assetStrategy, "assetStrategy", 100),
+    assetIds: input.assetIds === undefined ? undefined : stringArray(input.assetIds, "assetIds").map((id) => uuidParam(id, "assetId")),
+    imageBrief: input.imageBrief === undefined ? undefined : editableString(input.imageBrief, "imageBrief", 10_000),
+    videoBrief: input.videoBrief === undefined ? undefined : input.videoBrief === null ? Prisma.JsonNull : normalizeJson(input.videoBrief),
+    createdBy: optionalString(input.createdBy, "createdBy", 100) ?? "dashboard",
+  });
+  json(response, 201, record);
+}
+
+async function listContentDraftRecords(request: IncomingMessage, response: ServerResponse) {
+  const { db, workspace } = await currentWorkspace();
+  const projectId = new URL(request.url ?? "", "http://127.0.0.1").searchParams.get("projectId") ?? undefined;
+  if (projectId) uuidParam(projectId, "projectId");
+  json(response, 200, await listContentDrafts(db, workspace.id, projectId));
+}
+
+async function patchContentDraftRecord(request: IncomingMessage, response: ServerResponse, draftId: string) {
+  const { db, workspace } = await currentWorkspace();
+  uuidParam(draftId, "contentDraftId");
+  const input = objectInput(await bodyJson(request));
+  const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId");
+  const record = await patchContentDraft(db, workspace.id, projectId, draftId, {
+    title: input.title === undefined ? undefined : requiredString(input.title, "title", 300),
+    copy: input.copy === undefined ? undefined : editableString(input.copy, "copy", 20_000),
+    format: input.format === undefined ? undefined : requiredString(input.format, "format", 50),
+    assetStrategy: input.assetStrategy === undefined ? undefined : requiredString(input.assetStrategy, "assetStrategy", 100),
+    assetIds: input.assetIds === undefined ? undefined : stringArray(input.assetIds, "assetIds").map((id) => uuidParam(id, "assetId")),
+    imageBrief: input.imageBrief === undefined ? undefined : editableString(input.imageBrief, "imageBrief", 10_000),
+    videoBrief: input.videoBrief === undefined ? undefined : input.videoBrief === null ? Prisma.JsonNull : normalizeJson(input.videoBrief),
+    createdBy: optionalString(input.createdBy, "createdBy", 100) ?? "dashboard",
+  });
+  json(response, 200, record);
+}
+
+async function reviewContentDraftRecord(request: IncomingMessage, response: ServerResponse, draftId: string) {
+  const { db, workspace } = await currentWorkspace();
+  uuidParam(draftId, "contentDraftId");
+  const input = objectInput(await bodyJson(request));
+  const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId");
+  const status = input.status === "approved" ? "approved" : input.status === "rejected" ? "rejected" : input.status === "pending_review" ? "pending_review" : undefined;
+  if (!status) throw new ValidationError("status 必须是 pending_review、approved 或 rejected");
+  json(response, 200, await reviewContentDraft(db, workspace.id, projectId, draftId, status, optionalString(input.reason, "reason", 1000)));
+}
+
+function ideaPayload(idea: Record<string, unknown>, revision?: Record<string, unknown>, sources: string[] = [], targets: string[] = []) { return { ...idea, hook: revision?.hook || "", copy: revision?.copy || "", videoPrompt: revision?.videoSpec && typeof revision.videoSpec === "object" ? (revision.videoSpec as Record<string, unknown>).prompt : undefined, videoBrief: revision?.videoBrief, imageBrief: revision?.imageBrief, assetMatch: revision?.assetDecision, assetIds: revision?.assetIds ?? [], source: sources[0] || "", sourcePostIds: sources, platforms: targets, updatedAt: idea.updatedAt }; }
 
 async function listIdeas(request: IncomingMessage, response: ServerResponse) {
   const { db, workspace } = await currentWorkspace(); const projectId = new URL(request.url ?? "", "http://127.0.0.1").searchParams.get("projectId"); const ideas = await db.idea.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { updatedAt: "desc" } }); const revisions = await db.ideaRevision.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { version: "desc" } }); const sources = await db.ideaSource.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) } }); const targets = await db.ideaPlatformTarget.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) } }); return json(response, 200, ideas.map((idea) => ideaPayload(idea, revisions.find((revision) => revision.ideaId === idea.id), sources.filter((source) => source.ideaId === idea.id).map((source) => source.sourcePostId).filter((id): id is string => Boolean(id)), targets.filter((target) => target.ideaId === idea.id).map((target) => target.platform))));
 }
 
 async function createIdeas(request: IncomingMessage, response: ServerResponse) {
-  const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId"); const sourceIds = stringArray(input.sourcePostIds ?? [], "sourcePostIds"); const approved = await db.sourcePost.findMany({ where: { workspaceId: workspace.id, projectId, id: { in: sourceIds }, reviewState: "approved" } }); if (approved.length !== sourceIds.length) throw new ValidationError("Idea 只能使用已人工通过的 SourcePost"); const count = numberInput(input.count, "count", 1, 1, 50); const titles = Array.isArray(input.ideas) ? input.ideas.map((item) => objectInput(item)) : [{ title: requiredString(input.title ?? "未命名 Idea", "title", 300), hook: optionalString(input.hook, "hook", 2000) ?? "", copy: optionalString(input.copy, "copy", 5000) ?? "", format: optionalString(input.format, "format", 50) ?? "纯文本" }]; const created = await db.$transaction(async (tx) => { const output = []; for (let index = 0; index < Math.max(count, titles.length); index += 1) { const item = titles[index % titles.length]; const idea = await tx.idea.create({ data: { workspaceId: workspace.id, projectId, title: requiredString(item.title ?? `Idea ${index + 1}`, "title", 300), format: requiredString(item.format ?? "纯文本", "format", 50), generationBatchId: randomUUID() } }); const revision = await tx.ideaRevision.create({ data: { workspaceId: workspace.id, projectId, ideaId: idea.id, version: 1, hook: optionalString(item.hook, "hook", 2000) ?? "", copy: optionalString(item.copy, "copy", 5000) ?? "", videoSpec: item.videoPrompt ? { prompt: requiredString(item.videoPrompt, "videoPrompt", 10000) } : undefined, createdBy: "dashboard" } }); for (const sourcePostId of sourceIds) await tx.ideaSource.create({ data: { workspaceId: workspace.id, projectId, ideaId: idea.id, sourcePostId } }); const platforms = stringArray(input.platforms ?? [], "platforms"); for (const platform of platforms) await tx.ideaPlatformTarget.create({ data: { workspaceId: workspace.id, projectId, ideaId: idea.id, platform } }); output.push(ideaPayload(idea, revision, sourceIds, platforms)); } return output; }); json(response, 201, created);
+  const { db, workspace } = await currentWorkspace();
+  const input = objectInput(await bodyJson(request));
+  const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId");
+  const sourceIds = stringArray(input.sourcePostIds ?? [], "sourcePostIds").map((id) => uuidParam(id, "sourcePostId"));
+  const approved = await db.sourcePost.findMany({ where: { workspaceId: workspace.id, projectId, id: { in: sourceIds }, reviewState: "approved" } });
+  if (approved.length !== sourceIds.length) throw new ValidationError("选题只能使用已人工通过的来源帖");
+  const items = Array.isArray(input.ideas)
+    ? input.ideas.map((item) => objectInput(item))
+    : [{ title: requiredString(input.title, "title", 300), hook: optionalString(input.hook, "hook", 2000) ?? "", copy: optionalString(input.copy, "copy", 5000) ?? "", format: optionalString(input.format, "format", 50) ?? "纯文本", assetMatch: input.assetMatch, assetIds: input.assetIds, imageBrief: input.imageBrief, videoBrief: input.videoBrief, videoPrompt: input.videoPrompt }];
+  if (!items.length || items.length > 50) throw new ValidationError("ideas 必须包含 1–50 条真实选题内容");
+  if (input.count !== undefined && numberInput(input.count, "count", items.length, 1, 50) !== items.length) throw new ValidationError("count 必须与实际提交的 ideas 数量一致；服务端不会复制占位选题凑数");
+  const platforms = stringArray(input.platforms ?? [], "platforms");
+  const assetIds = [...new Set(items.flatMap((item) => stringArray(item.assetIds ?? [], "ideas.assetIds").map((id) => uuidParam(id, "assetId"))))];
+  if (assetIds.length) {
+    const ownedAssets = await db.asset.count({ where: { id: { in: assetIds }, workspaceId: workspace.id, projectId, status: "available" } });
+    if (ownedAssets !== assetIds.length) throw new ValidationError("部分选题资产不存在或不属于当前项目");
+  }
+  const patterns = sourceIds.length ? await db.patternCard.findMany({ where: { sourcePostId: { in: sourceIds }, workspaceId: workspace.id, projectId } }) : [];
+  const patternBySource = new Map(patterns.map((pattern) => [pattern.sourcePostId, pattern.id]));
+  const patternVersions = patterns.length ? await db.patternCardVersion.findMany({ where: { patternCardId: { in: patterns.map((pattern) => pattern.id) }, workspaceId: workspace.id, projectId }, orderBy: { version: "desc" } }) : [];
+  const versionByPattern = new Map<string, typeof patternVersions[number]>();
+  for (const version of patternVersions) if (!versionByPattern.has(version.patternCardId)) versionByPattern.set(version.patternCardId, version);
+  const generationBatchId = randomUUID();
+  const created = await db.$transaction(async (tx) => {
+    const output = [];
+    for (const item of items) {
+      const title = requiredString(item.title, "ideas.title", 300);
+      const format = requiredString(item.format ?? "纯文本", "ideas.format", 50);
+      const itemAssetIds = stringArray(item.assetIds ?? [], "ideas.assetIds").map((id) => uuidParam(id, "assetId"));
+      const rawAssetStrategy = optionalString(item.assetMatch ?? item.assetStrategy, "ideas.assetStrategy", 100) ?? "pending";
+      const assetDecision = rawAssetStrategy === "reuse_project_asset" ? "matched" : rawAssetStrategy === "generate_style_similar" ? "needs_generation" : rawAssetStrategy === "no_asset" ? "not_applicable" : rawAssetStrategy;
+      if (!new Set(["pending", "matched", "needs_generation", "not_applicable"]).has(assetDecision)) throw new ValidationError("ideas.assetStrategy 不受支持");
+      const copy = optionalString(item.copy, "ideas.copy", 10_000) ?? (item.copyOutline === undefined ? "" : stringArray(item.copyOutline, "ideas.copyOutline").join("\n"));
+      const videoBrief = item.videoBrief === undefined && item.videoPlaceholder !== undefined ? { status: "reserved", prompt: requiredString(item.videoPlaceholder, "ideas.videoPlaceholder", 10_000) } : item.videoBrief;
+      const idea = await tx.idea.create({ data: { workspaceId: workspace.id, projectId, title, format, generationBatchId } });
+      const revision = await tx.ideaRevision.create({ data: { workspaceId: workspace.id, projectId, ideaId: idea.id, version: 1, hook: optionalString(item.hook, "ideas.hook", 2000) ?? "", copy, videoSpec: item.videoPrompt ? { prompt: requiredString(item.videoPrompt, "ideas.videoPrompt", 10_000) } : undefined, assetDecision, assetIds: itemAssetIds, imageBrief: optionalString(item.imageBrief, "ideas.imageBrief", 10_000), videoBrief: videoBrief === undefined ? undefined : normalizeJson(videoBrief), promptVersion: optionalString(input.promptVersion, "promptVersion", 200), createdBy: optionalString(input.createdBy, "createdBy", 100) ?? "dashboard" } });
+      for (const sourcePostId of sourceIds) { const patternCardId = patternBySource.get(sourcePostId); await tx.ideaSource.create({ data: { workspaceId: workspace.id, projectId, ideaId: idea.id, sourcePostId, patternCardId, patternCardVersionId: patternCardId ? versionByPattern.get(patternCardId)?.id : undefined } }); }
+      for (const platform of platforms) await tx.ideaPlatformTarget.create({ data: { workspaceId: workspace.id, projectId, ideaId: idea.id, platform } });
+      output.push(ideaPayload(idea, revision, sourceIds, platforms));
+    }
+    return output;
+  });
+  json(response, 201, created);
 }
 
 async function patchIdea(request: IncomingMessage, response: ServerResponse, id: string) {
-  const { db, workspace } = await currentWorkspace(); uuidParam(id, "ideaId"); const input = objectInput(await bodyJson(request)); const current = await db.idea.findFirstOrThrow({ where: { id, workspaceId: workspace.id } }); const version = current.currentVersion + 1; const revision = await db.$transaction(async (tx) => { const idea = await tx.idea.update({ where: { id }, data: { title: input.title === undefined ? undefined : requiredString(input.title, "title", 300), format: input.format === undefined ? undefined : requiredString(input.format, "format", 50), currentVersion: version } }); const next = await tx.ideaRevision.create({ data: { workspaceId: workspace.id, projectId: current.projectId, ideaId: id, version, hook: optionalString(input.hook, "hook", 2000) ?? "", copy: optionalString(input.copy, "copy", 5000) ?? "", videoSpec: input.videoPrompt ? { prompt: requiredString(input.videoPrompt, "videoPrompt", 10000) } : undefined, assetDecision: optionalString(input.assetMatch, "assetMatch", 100), createdBy: "dashboard" } }); return { idea, revision: next }; }); json(response, 200, ideaPayload(revision.idea, revision.revision));
+  const { db, workspace } = await currentWorkspace();
+  uuidParam(id, "ideaId");
+  const input = objectInput(await bodyJson(request));
+  const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId");
+  const current = await db.idea.findFirst({ where: { id, workspaceId: workspace.id, projectId } });
+  if (!current) throw new ValidationError("选题不存在或不属于当前项目");
+  const currentRevision = await db.ideaRevision.findFirst({ where: { ideaId: id, workspaceId: workspace.id }, orderBy: { version: "desc" } });
+  const sources = await db.ideaSource.findMany({ where: { ideaId: id, workspaceId: workspace.id } });
+  const targets = await db.ideaPlatformTarget.findMany({ where: { ideaId: id, workspaceId: workspace.id } });
+  const version = current.currentVersion + 1;
+  const nextAssetIds = input.assetIds === undefined ? currentRevision?.assetIds ?? [] : stringArray(input.assetIds, "assetIds").map((assetId) => uuidParam(assetId, "assetId"));
+  if (nextAssetIds.length) {
+    const count = await db.asset.count({ where: { id: { in: nextAssetIds }, workspaceId: workspace.id, projectId: current.projectId, status: "available" } });
+    if (count !== nextAssetIds.length) throw new ValidationError("部分选题资产不存在或不属于当前项目");
+  }
+  const revision = await db.$transaction(async (tx) => {
+    const idea = await tx.idea.update({ where: { id }, data: { title: input.title === undefined ? undefined : requiredString(input.title, "title", 300), format: input.format === undefined ? undefined : requiredString(input.format, "format", 50), currentVersion: version, status: "candidate" } });
+    const next = await tx.ideaRevision.create({ data: { workspaceId: workspace.id, projectId: current.projectId, ideaId: id, version, hook: input.hook === undefined ? currentRevision?.hook ?? "" : optionalString(input.hook, "hook", 2000) ?? "", copy: input.copy === undefined ? currentRevision?.copy ?? "" : optionalString(input.copy, "copy", 10_000) ?? "", videoSpec: input.videoPrompt === undefined ? currentRevision?.videoSpec ?? undefined : input.videoPrompt ? { prompt: requiredString(input.videoPrompt, "videoPrompt", 10_000) } : Prisma.JsonNull, assetDecision: input.assetMatch === undefined ? currentRevision?.assetDecision : optionalString(input.assetMatch, "assetMatch", 100), assetIds: nextAssetIds, imageBrief: input.imageBrief === undefined ? currentRevision?.imageBrief : optionalString(input.imageBrief, "imageBrief", 10_000), videoBrief: input.videoBrief === undefined ? currentRevision?.videoBrief ?? undefined : input.videoBrief ? normalizeJson(input.videoBrief) : Prisma.JsonNull, promptVersion: optionalString(input.promptVersion, "promptVersion", 200) ?? currentRevision?.promptVersion, createdBy: optionalString(input.createdBy, "createdBy", 100) ?? "dashboard" } });
+    return { idea, revision: next };
+  });
+  json(response, 200, ideaPayload(revision.idea, revision.revision, sources.map((source) => source.sourcePostId).filter((sourceId): sourceId is string => Boolean(sourceId)), targets.map((target) => target.platform)));
 }
 
-async function reviewIdeas(request: IncomingMessage, response: ServerResponse) { const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const ids = stringArray(input.ids ?? [], "ids"); const status = input.status === "approved" ? "approved" : input.status === "rejected" ? "rejected" : "candidate"; const updated = await db.$transaction(async (tx) => { const ideas = await tx.idea.findMany({ where: { id: { in: ids }, workspaceId: workspace.id } }); if (ideas.length !== ids.length) throw new ValidationError("部分 Idea 不存在或不属于当前 Workspace"); for (const idea of ideas) { await tx.idea.update({ where: { id: idea.id }, data: { status } }); await tx.reviewDecision.create({ data: { workspaceId: workspace.id, projectId: idea.projectId, entityType: "idea", entityId: idea.id, status: status === "approved" ? "approved" : status === "rejected" ? "rejected" : "pending", reason: optionalString(input.reason, "reason", 1000), reviewer: "dashboard", objectVersion: idea.currentVersion } }); } return ids.length; }); json(response, 200, { updated }); }
+async function reviewIdeas(request: IncomingMessage, response: ServerResponse) { const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId"); const ids = stringArray(input.ids ?? [], "ids").map((id) => uuidParam(id, "ideaId")); const status = input.status === "approved" ? "approved" : input.status === "rejected" ? "rejected" : "candidate"; const updated = await db.$transaction(async (tx) => { const ideas = await tx.idea.findMany({ where: { id: { in: ids }, workspaceId: workspace.id, projectId } }); if (ideas.length !== ids.length) throw new ValidationError("部分选题不存在或不属于当前项目"); for (const idea of ideas) { await tx.idea.update({ where: { id: idea.id }, data: { status } }); await tx.reviewDecision.create({ data: { workspaceId: workspace.id, projectId: idea.projectId, entityType: "idea", entityId: idea.id, status: status === "approved" ? "approved" : status === "rejected" ? "rejected" : "pending", reason: optionalString(input.reason, "reason", 1000), reviewer: "dashboard", objectVersion: idea.currentVersion } }); } return ids.length; }); json(response, 200, { updated }); }
 
 async function createGenerationRun(request: IncomingMessage, response: ServerResponse) { const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const key = idempotencyKey(request, input); if (key) { const existing = await db.idempotencyKey.findUnique({ where: { workspaceId_key_operation: { workspaceId: workspace.id, key, operation: "generation-run.create" } } }); if (existing?.response) { json(response, 200, existing.response); return; } } const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId"); const provider = optionalString(input.provider, "provider", 200) ?? "unconfigured"; const traceId = optionalString(input.traceId, "traceId", 200) ?? randomUUID(); const run = await db.$transaction(async (tx) => { const created = await tx.generationRun.create({ data: { workspaceId: workspace.id, projectId, ideaId: typeof input.ideaId === "string" ? input.ideaId : undefined, provider, providerVersion: optionalString(input.providerVersion, "providerVersion", 200), promptVersion: optionalString(input.promptVersion, "promptVersion", 200), traceId, idempotencyKey: key, inputSnapshot: normalizeJson(input), status: "queued", errorCode: provider === "unconfigured" ? "PROVIDER_NOT_CONFIGURED" : undefined, errorMessage: provider === "unconfigured" ? "生成 Provider 尚未配置，任务未执行" : undefined } }); if (key) await tx.idempotencyKey.create({ data: { workspaceId: workspace.id, key, operation: "generation-run.create", requestHash: randomUUID(), response: jsonSnapshot(created) } }); return created; }); json(response, 201, run); }
 
-async function createPublicationDraft(request: IncomingMessage, response: ServerResponse) { const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const key = idempotencyKey(request, input); if (key) { const existing = await db.idempotencyKey.findUnique({ where: { workspaceId_key_operation: { workspaceId: workspace.id, key, operation: "publication-draft.create" } } }); if (existing?.response) { json(response, 200, existing.response); return; } } const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId"); const draft = await db.$transaction(async (tx) => { const created = await tx.publicationDraft.create({ data: { workspaceId: workspace.id, projectId, renditionId: typeof input.renditionId === "string" ? input.renditionId : undefined, accountId: typeof input.accountId === "string" ? input.accountId : undefined, platform: requiredString(input.platform, "platform", 50), idempotencyKey: key } }); if (key) await tx.idempotencyKey.create({ data: { workspaceId: workspace.id, key, operation: "publication-draft.create", requestHash: randomUUID(), response: jsonSnapshot(created) } }); return created; }); json(response, 201, draft); }
+async function createPublicationDraft(request: IncomingMessage, response: ServerResponse) {
+  const { db, workspace } = await currentWorkspace();
+  const input = objectInput(await bodyJson(request));
+  const key = idempotencyKey(request, input);
+  if (key) {
+    const existing = await db.idempotencyKey.findUnique({ where: { workspaceId_key_operation: { workspaceId: workspace.id, key, operation: "publication-draft.create" } } });
+    if (existing?.response) { json(response, 200, existing.response); return; }
+  }
+  const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId");
+  const contentDraftId = uuidParam(typeof input.contentDraftId === "string" ? input.contentDraftId : undefined, "contentDraftId");
+  const accountId = uuidParam(typeof input.accountId === "string" ? input.accountId : undefined, "accountId");
+  const platform = requiredString(input.platform, "platform", 50);
+  const contentDraft = await db.contentDraft.findFirst({ where: { id: contentDraftId, projectId, workspaceId: workspace.id } });
+  if (!contentDraft || contentDraft.status !== "approved") throw new ValidationError("只有已批准且属于当前项目的待审草稿才能进入发布队列");
+  const revision = await db.contentDraftRevision.findFirst({ where: { contentDraftId, workspaceId: workspace.id }, orderBy: { version: "desc" } });
+  if (!revision) throw new ValidationError("待审草稿没有可发布版本");
+  const account = await db.socialAccount.findFirst({ where: { id: accountId, workspaceId: workspace.id, platform, lifecycleStatus: "active" } });
+  if (!account) throw new ValidationError("发布账号不存在、已归档或平台不匹配");
+  const binding = await db.projectAccountBinding.findFirst({ where: { projectId, accountId, workspaceId: workspace.id, roles: { has: "publishing" } } });
+  if (!binding) throw new ValidationError("所选账号没有当前项目的 Publishing 角色");
+  if (revision.assetStrategy === "pending") throw new ValidationError("发布前必须明确图片/资产策略");
+  const assetVersions = revision.assetIds.length ? await db.assetVersion.findMany({ where: { assetId: { in: revision.assetIds }, projectId, workspaceId: workspace.id, artifactId: { not: null } }, orderBy: { version: "desc" } }) : [];
+  const latestAssetVersion = new Map<string, typeof assetVersions[number]>();
+  for (const version of assetVersions) if (!latestAssetVersion.has(version.assetId)) latestAssetVersion.set(version.assetId, version);
+  const artifactIds = revision.assetIds.flatMap((assetId) => latestAssetVersion.get(assetId)?.artifactId ?? []);
+  if (revision.assetIds.length && artifactIds.length !== revision.assetIds.length) throw new ValidationError("部分发布资产没有可用 Artifact");
+  if ((revision.assetStrategy === "matched" || revision.assetStrategy === "needs_generation" || revision.assetStrategy === "reuse_project_asset" || revision.assetStrategy === "generate_style_similar") && !revision.assetIds.length) throw new ValidationError("当前资产策略要求至少一个已登记的项目或生成资产");
+  const result = await db.$transaction(async (tx) => {
+    const rendition = await tx.platformRendition.create({ data: { workspaceId: workspace.id, projectId, ideaId: contentDraft.ideaId, platform, locale: optionalString(input.locale, "locale", 50) ?? "default", title: revision.title, copy: revision.copy, artifactId: artifactIds[0], version: revision.version, metadata: normalizeJson({ contentDraftId, contentDraftRevision: revision.version, assetStrategy: revision.assetStrategy, assetIds: revision.assetIds, artifactIds, imageBrief: revision.imageBrief, videoBrief: revision.videoBrief, sourceSnapshot: revision.sourceSnapshot }) } });
+    const draft = await tx.publicationDraft.create({ data: { workspaceId: workspace.id, projectId, contentDraftId, renditionId: rendition.id, accountId, platform, idempotencyKey: key } });
+    const output = { ...draft, rendition, contentDraft, revision };
+    if (key) await tx.idempotencyKey.create({ data: { workspaceId: workspace.id, key, operation: "publication-draft.create", requestHash: randomUUID(), response: jsonSnapshot(output) } });
+    await tx.auditLog.create({ data: { workspaceId: workspace.id, projectId, actor: "dashboard", action: "publication_draft.created", entityType: "publication_draft", entityId: draft.id, after: { contentDraftId, renditionId: rendition.id, accountId, platform, contentDraftRevision: revision.version } } });
+    return output;
+  });
+  json(response, 201, result);
+}
+
+async function listPublicationDraftRecords(request: IncomingMessage, response: ServerResponse) {
+  const { db, workspace } = await currentWorkspace();
+  const projectId = new URL(request.url ?? "", "http://127.0.0.1").searchParams.get("projectId") ?? undefined;
+  if (projectId) uuidParam(projectId, "projectId");
+  const drafts = await db.publicationDraft.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { createdAt: "desc" } });
+  const renditionIds = drafts.map((draft) => draft.renditionId).filter((id): id is string => Boolean(id));
+  const contentDraftIds = drafts.map((draft) => draft.contentDraftId).filter((id): id is string => Boolean(id));
+  const [renditions, contentDrafts, revisions, receipts] = await Promise.all([
+    renditionIds.length ? db.platformRendition.findMany({ where: { id: { in: renditionIds }, workspaceId: workspace.id } }) : [],
+    contentDraftIds.length ? db.contentDraft.findMany({ where: { id: { in: contentDraftIds }, workspaceId: workspace.id } }) : [],
+    contentDraftIds.length ? db.contentDraftRevision.findMany({ where: { contentDraftId: { in: contentDraftIds }, workspaceId: workspace.id }, orderBy: { version: "desc" } }) : [],
+    drafts.length ? db.publicationReceipt.findMany({ where: { publicationDraftId: { in: drafts.map((draft) => draft.id) }, workspaceId: workspace.id }, orderBy: { createdAt: "desc" } }) : [],
+  ]);
+  const renditionById = new Map(renditions.map((rendition) => [rendition.id, rendition]));
+  const contentDraftById = new Map(contentDrafts.map((draft) => [draft.id, draft]));
+  const revisionByDraftAndVersion = new Map(revisions.map((revision) => [`${revision.contentDraftId}:${revision.version}`, revision]));
+  const receiptByDraft = new Map<string, typeof receipts[number]>(); for (const receipt of receipts) if (!receiptByDraft.has(receipt.publicationDraftId)) receiptByDraft.set(receipt.publicationDraftId, receipt);
+  json(response, 200, drafts.map((draft) => { const rendition = draft.renditionId ? renditionById.get(draft.renditionId) : undefined; return { ...draft, rendition, contentDraft: draft.contentDraftId ? contentDraftById.get(draft.contentDraftId) : undefined, revision: draft.contentDraftId && rendition ? revisionByDraftAndVersion.get(`${draft.contentDraftId}:${rendition.version}`) : undefined, receipt: receiptByDraft.get(draft.id) }; }));
+}
 
 async function migrateDemoWorkspace(request: IncomingMessage, response: ServerResponse) {
   const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const key = idempotencyKey(request, input); if (key) { const existing = await db.idempotencyKey.findUnique({ where: { workspaceId_key_operation: { workspaceId: workspace.id, key, operation: "demo-workspace.migrate" } } }); if (existing?.response) { json(response, 200, existing.response); return; } } const projects = Array.isArray(input.projects) ? input.projects.map(objectInput) : []; const topics = Array.isArray(input.topicWatches) ? input.topicWatches.map(objectInput) : []; const accounts = Array.isArray(input.accounts) ? input.accounts.map(objectInput) : []; const bindings = Array.isArray(input.accountBindings) ? input.accountBindings.map(objectInput) : []; const projectIds = new Map<string, string>(); const accountIds = new Map<string, string>();
@@ -482,24 +817,37 @@ async function handle(request: IncomingMessage, response: ServerResponse, pathna
     if (artifact) { const id = uuidParam(artifact[1], "artifactId"); const { db, workspace } = await currentWorkspace(); const record = await db.artifact.findFirstOrThrow({ where: { id, workspaceId: workspace.id, status: "ready" } }); if (artifact[2] && request.method === "GET") { response.statusCode = 200; response.setHeader("Content-Type", record.mimeType); response.setHeader("Content-Length", record.sizeBytes.toString()); response.setHeader("Content-Disposition", `inline; filename="${(record.originalName || `${record.id}.bin`).replace(/[^a-zA-Z0-9._-]/g, "_")}"`); (await storage.get(record.id)).pipe(response); return; } if (request.method === "GET") { json(response, 200, record); return; } if (request.method === "DELETE") { await db.artifact.update({ where: { id }, data: { status: "deleted" } }); await storage.delete(record.id); json(response, 204, {}); return; } }
     const sourcePosts = pathname === `${BASE}/source-posts`;
     if (sourcePosts && request.method === "GET") { await listSourcePosts(request, response); return; }
+    const sourceAnalysis = pathname.match(new RegExp(`^${BASE}/source-posts/([^/]+)/(analysis-context|analysis|comment-runs)$`));
+    if (sourceAnalysis && request.method === "GET" && sourceAnalysis[2] === "analysis-context") { await analysisContext(request, response, sourceAnalysis[1]); return; }
+    if (sourceAnalysis && request.method === "PUT" && sourceAnalysis[2] === "analysis") { await saveAnalysis(request, response, sourceAnalysis[1]); return; }
+    if (sourceAnalysis && request.method === "POST" && sourceAnalysis[2] === "comment-runs") { await runCommentCollection(request, response, sourceAnalysis[1]); return; }
     if (pathname === `${BASE}/source-posts/reviews` && request.method === "POST") { await reviewSourcePosts(request, response); return; }
     const ideas = pathname.match(new RegExp(`^${BASE}/ideas(?:/([^/]+))?$`));
     if (ideas && request.method === "GET" && !ideas[1]) { await listIdeas(request, response); return; }
     if (ideas && request.method === "POST" && !ideas[1]) { await createIdeas(request, response); return; }
     if (ideas && request.method === "PATCH" && ideas[1]) { await patchIdea(request, response, ideas[1]); return; }
     if (pathname === `${BASE}/ideas/reviews` && request.method === "POST") { await reviewIdeas(request, response); return; }
+    const insights = pathname.match(new RegExp(`^${BASE}/insights(?:/([^/]+))?$`));
+    if (insights && request.method === "GET" && !insights[1]) { await listInsightRecords(request, response); return; }
+    if (insights && request.method === "POST" && !insights[1]) { await createInsightRecord(request, response); return; }
+    if (insights && request.method === "PATCH" && insights[1]) { await patchInsightRecord(request, response, insights[1]); return; }
+    const contentDrafts = pathname.match(new RegExp(`^${BASE}/content-drafts(?:/([^/]+))?(?:/(review))?$`));
+    if (contentDrafts && request.method === "GET" && !contentDrafts[1]) { await listContentDraftRecords(request, response); return; }
+    if (contentDrafts && request.method === "POST" && !contentDrafts[1]) { await createContentDraftRecord(request, response); return; }
+    if (contentDrafts && request.method === "PATCH" && contentDrafts[1] && !contentDrafts[2]) { await patchContentDraftRecord(request, response, contentDrafts[1]); return; }
+    if (contentDrafts && request.method === "POST" && contentDrafts[1] && contentDrafts[2] === "review") { await reviewContentDraftRecord(request, response, contentDrafts[1]); return; }
     const generation = pathname.match(new RegExp(`^${BASE}/generation-runs(?:/([^/]+))?$`));
     if (generation && request.method === "POST" && !generation[1]) { await createGenerationRun(request, response); return; }
     if (generation && request.method === "GET") { const { db, workspace } = await currentWorkspace(); const projectId = new URL(request.url ?? "", "http://127.0.0.1").searchParams.get("projectId"); const run = generation[1] ? await db.generationRun.findFirstOrThrow({ where: { id: generation[1], workspaceId: workspace.id } }) : await db.generationRun.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { createdAt: "desc" } }); json(response, 200, run); return; }
     if (generation && request.method === "PATCH" && generation[1]) { const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const current = await db.generationRun.findFirstOrThrow({ where: { id: generation[1], workspaceId: workspace.id } }); json(response, 200, await db.generationRun.update({ where: { id: current.id }, data: { inputSnapshot: normalizeJson(input), promptVersion: optionalString(input.promptVersion, "promptVersion", 200), errorCode: undefined, errorMessage: undefined } })); return; }
     const publication = pathname.match(new RegExp(`^${BASE}/publication-drafts(?:/([^/]+))?(?:/(approve|execute))?$`));
     if (publication && request.method === "POST" && !publication[1]) { await createPublicationDraft(request, response); return; }
-    if (publication && request.method === "POST" && publication[1] && publication[2] === "approve") { const { db, workspace } = await currentWorkspace(); const draft = await db.publicationDraft.updateMany({ where: { id: publication[1], workspaceId: workspace.id, status: "draft" }, data: { status: "approved" } }); if (!draft.count) throw new ValidationError("草稿不存在或当前状态不可审批"); json(response, 200, await db.publicationDraft.findUniqueOrThrow({ where: { id: publication[1] } })); return; }
-    if (publication && request.method === "POST" && publication[1] && publication[2] === "execute") { const { db, workspace } = await currentWorkspace(); const draft = await db.publicationDraft.updateMany({ where: { id: publication[1], workspaceId: workspace.id, status: "approved" }, data: { status: "failed_retryable", errorCode: "PUBLISHER_NOT_CONFIGURED", errorMessage: "Publisher 尚未配置，发布未执行" } }); if (!draft.count) throw new ValidationError("草稿不存在或必须先审批"); json(response, 200, await db.publicationDraft.findUniqueOrThrow({ where: { id: publication[1] } })); return; }
-    if (pathname === `${BASE}/publication-drafts` && request.method === "GET") { const { db, workspace } = await currentWorkspace(); json(response, 200, await db.publicationDraft.findMany({ where: { workspaceId: workspace.id }, orderBy: { createdAt: "desc" } })); return; }
+    if (publication && request.method === "POST" && publication[1] && publication[2] === "approve") { const { db, workspace } = await currentWorkspace(); uuidParam(publication[1], "publicationDraftId"); const input = objectInput(await bodyJson(request)); const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId"); json(response, 200, await approvePublicationDraft(db, workspace.id, projectId, publication[1])); return; }
+    if (publication && request.method === "POST" && publication[1] && publication[2] === "execute") { const { db, workspace } = await currentWorkspace(); uuidParam(publication[1], "publicationDraftId"); const input = objectInput(await bodyJson(request)); const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId"); json(response, 200, await executePublicationDraft(db, workspace.id, projectId, publication[1])); return; }
+    if (pathname === `${BASE}/publication-drafts` && request.method === "GET") { await listPublicationDraftRecords(request, response); return; }
     const assets = pathname === `${BASE}/assets`;
-    if (assets && request.method === "GET") { const { db, workspace } = await currentWorkspace(); const projectId = new URL(request.url ?? "", "http://127.0.0.1").searchParams.get("projectId"); json(response, 200, await db.asset.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { createdAt: "desc" } })); return; }
-    if (assets && request.method === "POST") { const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId"); const asset = await db.$transaction(async (tx) => { const record = await tx.asset.create({ data: { workspaceId: workspace.id, projectId, name: requiredString(input.name, "name", 300), type: requiredString(input.type, "type", 50), usage: optionalString(input.usage, "usage", 1000) ?? "", status: "available" } }); await tx.assetVersion.create({ data: { workspaceId: workspace.id, projectId, assetId: record.id, version: 1, tags: stringArray(input.tags ?? [], "tags"), metadata: input.metadata as Prisma.InputJsonValue | undefined } }); return record; }); json(response, 201, asset); return; }
+    if (assets && request.method === "GET") { const { db, workspace } = await currentWorkspace(); const projectId = new URL(request.url ?? "", "http://127.0.0.1").searchParams.get("projectId"); if (projectId) uuidParam(projectId, "projectId"); const records = await db.asset.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { createdAt: "desc" } }); const versions = records.length ? await db.assetVersion.findMany({ where: { workspaceId: workspace.id, assetId: { in: records.map((record) => record.id) } }, orderBy: { version: "desc" } }) : []; const latest = new Map<string, typeof versions[number]>(); for (const version of versions) if (!latest.has(version.assetId)) latest.set(version.assetId, version); json(response, 200, records.map((record) => { const version = latest.get(record.id); return { ...record, tags: version?.tags ?? [], metadata: version?.metadata, artifactId: version?.artifactId, contentUrl: version?.artifactId ? `${BASE}/artifacts/${version.artifactId}/content` : undefined }; })); return; }
+    if (assets && request.method === "POST") { const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId"); const artifactId = input.artifactId === undefined ? undefined : uuidParam(typeof input.artifactId === "string" ? input.artifactId : undefined, "artifactId"); if (artifactId) { const artifact = await db.artifact.findFirst({ where: { id: artifactId, workspaceId: workspace.id, projectId, status: "ready" } }); if (!artifact) throw new ValidationError("Artifact 不存在、未就绪或不属于当前项目"); } const asset = await db.$transaction(async (tx) => { const record = await tx.asset.create({ data: { workspaceId: workspace.id, projectId, name: requiredString(input.name, "name", 300), type: requiredString(input.type, "type", 50), usage: optionalString(input.usage, "usage", 1000) ?? "", status: "available" } }); const version = await tx.assetVersion.create({ data: { workspaceId: workspace.id, projectId, assetId: record.id, artifactId, version: 1, tags: stringArray(input.tags ?? [], "tags"), metadata: input.metadata as Prisma.InputJsonValue | undefined } }); if (artifactId) await tx.artifactLink.create({ data: { workspaceId: workspace.id, projectId, artifactId, entityType: "asset", entityId: record.id, role: "source" } }); return { ...record, tags: version.tags, metadata: version.metadata, artifactId, contentUrl: artifactId ? `${BASE}/artifacts/${artifactId}/content` : undefined }; }); json(response, 201, asset); return; }
     const runs = pathname.match(new RegExp(`^${BASE}/(?:runs|generation-runs)(?:/([^/]+))?$`));
     if (runs && request.method === "GET") {
       const { db, workspace } = await currentWorkspace();

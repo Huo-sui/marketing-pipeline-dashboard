@@ -11,7 +11,7 @@ const platformColors: Record<string, string> = { TikTok: "#28312b", "小红书":
 export function OverviewPage() {
   const { selectedProject, projects, topicWatches, sourcePosts, ideas } = useDemoState();
   const [drafts, setDrafts] = useState<Array<Record<string, unknown>>>([]);
-  useEffect(() => { void controlApi.listPublicationDrafts().then(setDrafts).catch(() => setDrafts([])); }, [selectedProject]);
+  useEffect(() => { let active = true; setDrafts([]); void controlApi.listPublicationDrafts(selectedProject || undefined).then((records) => { if (active) setDrafts(records); }).catch(() => { if (active) setDrafts([]); }); return () => { active = false; }; }, [selectedProject]);
   const currentProject = projects.find((project) => project.id === selectedProject);
   const topPosts = [...sourcePosts].sort((a, b) => b.score - a.score).slice(0, 3);
   const currentTopics = topicWatches.filter((topic) => topic.projectId === selectedProject);
@@ -24,22 +24,22 @@ export function OverviewPage() {
     <div className="kpi-grid">
       <div className="kpi"><div className="kpi-label">监控话题</div><div className="kpi-value">{currentTopics.length}</div><div className="kpi-foot"><span className="delta-up">{currentTopics.filter((topic) => topic.state === "running").length} 个运行中</span> · 服务端配置</div></div>
       <div className="kpi"><div className="kpi-label">项目帖子</div><div className="kpi-value">{sourcePosts.length}</div><div className="kpi-foot">Control API 查询结果</div></div>
-      <div className="kpi"><div className="kpi-label">待审核 Idea</div><div className="kpi-value">{pendingIdeas}</div><div className="kpi-foot">来源帖子必须先人工通过</div></div>
+      <div className="kpi"><div className="kpi-label">待终审选题</div><div className="kpi-value">{pendingIdeas}</div><div className="kpi-foot">来源爆帖必须先人工通过</div></div>
       <div className="kpi"><div className="kpi-label">待发布内容</div><div className="kpi-value">{pendingDrafts}</div><div className="kpi-foot">PublicationDraft</div></div>
     </div>
     <div className="dashboard-grid">
       <Panel title="今日爆帖" caption="按项目话题内表现排序" action={<Link to="/source-posts"><Button type="link" size="small">全部 <ArrowRight size={13} /></Button></Link>}>
         {topPosts.length === 0 ? <div className="empty-state">当前项目还没有来自 Control API 的帖子</div> : topPosts.map((post) => <div className="post-row" key={post.id}>
-          <img className="post-thumb" src={post.image} alt="Demo Seed 内容缩略图" />
+          {post.image ? <img className="post-thumb" src={post.image} alt="内容缩略图" /> : <div className="post-thumb empty-state">无封面</div>}
           <div><PlatformBadge platform={post.platform} /><div className="post-title">{post.title}</div><div className="post-meta">{post.author} · {post.published} · {post.topic}</div></div>
           <div className="post-score"><div className="score-value">{post.score}</div><div className="score-label">Hot score</div></div>
         </div>)}
       </Panel>
       <Panel title="管线状态" caption="当前工作项">
         <div className="pipeline-item"><div className="pipeline-line"><span className="pipeline-name">抓取与标准化</span><span className="pipeline-count">{sourcePosts.length}</span></div></div>
-        <div className="pipeline-item"><div className="pipeline-line"><span className="pipeline-name">Idea 审核</span><span className="pipeline-count">{ideas.length}</span></div></div>
-        <div className="pipeline-item"><div className="pipeline-line"><span className="pipeline-name">生成与验收</span><span className="pipeline-count">数据库任务</span></div></div>
-        <div className="pipeline-item"><div className="pipeline-line"><span className="pipeline-name">发布草稿</span><span className="pipeline-count">{drafts.length}</span></div></div>
+        <div className="pipeline-item"><div className="pipeline-line"><span className="pipeline-name">选题终审</span><span className="pipeline-count">{ideas.length}</span></div></div>
+        <div className="pipeline-item"><div className="pipeline-line"><span className="pipeline-name">待审草稿</span><span className="pipeline-count">数据库版本</span></div></div>
+        <div className="pipeline-item"><div className="pipeline-line"><span className="pipeline-name">发布队列</span><span className="pipeline-count">{drafts.length}</span></div></div>
         <Link to="/topics"><Button block style={{ marginTop: 20 }} icon={<RadioTower size={15} />}>查看抓取计划</Button></Link>
       </Panel>
     </div>

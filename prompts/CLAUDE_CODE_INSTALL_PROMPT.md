@@ -1,5 +1,7 @@
 # Copy this prompt into Claude Code
 
+[简体中文版](CLAUDE_CODE_INSTALL_PROMPT.zh-CN.md)
+
 Install and start the complete Marketing Pipeline on my local machine: Core
 mode (Dashboard, Control API, database, and shared pipeline) plus Android Phone
 mode. Repository:
@@ -34,8 +36,10 @@ is incomplete; success requires a real, authorized Android phone.
    creation. Have me put the key directly in local `.env` as
    `ZHIPU_API_KEY=...`; never request the key in chat, print it, or commit it.
 6. Start the product with `npm start`, bound only to `127.0.0.1`, keep it
-   running, and verify it with `npm run health`.
-7. Give me http://127.0.0.1:3210 and guide the in-product phone account setup
+   running, and verify it with `npm run health` from a second terminal. If the
+   configured Dashboard port is occupied, choose a free
+   `MARKETING_PIPELINE_PORT` in `.env`; never work around it with `0.0.0.0`.
+7. Give me the local Dashboard URL (3210 by default) and guide the in-product phone account setup
    until the real account identity is detected and I confirm it.
 8. Only then summarize the URL, health status, redacted phone model/Android
    version, Phone Doctor READY result, installed platform apps, and any honestly

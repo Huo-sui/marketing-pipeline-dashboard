@@ -4,11 +4,12 @@
 
 ## 平台化能力
 
-- 控制层只依赖 `PlatformAdapter` 合同，不得通过平台名称分支实现账号预检、抓取运行、阈值筛选、去重、数据库保存、审计日志或收件箱展示。
+- 控制层只依赖 `PlatformAdapter` 合同，不得通过平台名称分支实现账号预检、抓取运行、阈值筛选、去重、数据库保存、审计日志或选题箱/灵感箱展示。
 - 手机基础设施（设备发现、ADB、Appium、UI source、点击、输入、剪贴板）属于通用移动端 Driver，不得写入某个平台页面语义。
 - 所有平台的 Discovery 输出必须标准化为真实 `externalId`、真实 `canonicalUrl`、作者、标题、指标、发布时间（可缺省）、媒体类型、命中词和原始证据。
 - Adapter 必须显式声明运行依赖（账号绑定、已确认身份、手机 Runner、视觉 Provider）和采集必填字段清单；控制层不得用 `mode === phone` 推断 TikTok 规则。
-- SourcePost upsert、SourceMetricSnapshot、SourcePostMatch、PipelineRun/RunEvent、幂等与“爆款收件箱”是统一 Pipeline 能力。
+- SourcePost upsert、SourceMetricSnapshot、SourcePostMatch、PipelineRun/RunEvent、幂等与来源候选池是统一 Pipeline 能力；原始帖子作为证据保留在话题雷达，只有由来源证据推导、可编辑并支持人工终审的 Idea 才进入“选题箱”。
+- “灵感箱”中的灵感、痛点与反馈，以及“待审草稿”的版本、来源选题、原帖溯源和素材来源，同样属于统一 Pipeline 能力，不得写成小红书专属数据结构。
 - 硬阈值完全由 TopicWatch 配置；相对异常只能使用同平台、同 TopicWatch、同追踪词、相近发布年龄的历史基线，不能跨平台比较，也不能用抓取时间冒充发布时间。
 - UI 的“运行 P0 规则”必须调用已保存规则；不得依赖 Codex 临时操作手机或手工搬运结果。
 

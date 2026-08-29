@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability / 安全漏洞
+    url: https://github.com/Huo-sui/marketing-pipeline-dashboard/security/advisories/new
+    about: Report vulnerabilities privately. Do not post secrets or account/device data in a public issue. / 请私密报告漏洞，不要在公开 Issue 中发布 Secret 或账号/设备数据。

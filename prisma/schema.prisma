@@ -67,6 +67,12 @@ enum PublicationStatus {
   unknown_requires_review
 }
 
+enum ContentDraftStatus {
+  pending_review
+  approved
+  rejected
+}
+
 model Workspace {
   id        String   @id @default(uuid()) @db.Uuid
   name      String
@@ -301,10 +307,29 @@ model SourcePost {
   createdAt     DateTime     @default(now()) @map("created_at")
   updatedAt     DateTime     @updatedAt @map("updated_at")
 
-  @@unique([platform, externalId])
-  @@unique([platform, canonicalHash])
+  @@unique([projectId, platform, externalId])
+  @@unique([projectId, platform, canonicalHash])
   @@index([workspaceId, projectId, reviewState])
   @@map("source_posts")
+}
+
+model SourceComment {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @map("workspace_id") @db.Uuid
+  projectId     String   @map("project_id") @db.Uuid
+  sourcePostId  String   @map("source_post_id") @db.Uuid
+  evidenceHash  String   @map("evidence_hash")
+  externalId    String?  @map("external_id")
+  author        String   @default("")
+  body          String
+  likes         Int?
+  publishedAt   DateTime? @map("published_at")
+  capturedAt    DateTime @default(now()) @map("captured_at")
+  rawPayload    Json?    @map("raw_payload")
+
+  @@unique([sourcePostId, evidenceHash])
+  @@index([workspaceId, projectId, sourcePostId, capturedAt])
+  @@map("source_comments")
 }
 
 model SourcePostMatch {
@@ -410,6 +435,9 @@ model IdeaRevision {
   copy          String   @default("")
   videoSpec     Json?    @map("video_spec")
   assetDecision String?  @map("asset_decision")
+  assetIds      String[] @default([]) @map("asset_ids") @db.Uuid
+  imageBrief    String?  @map("image_brief")
+  videoBrief    Json?    @map("video_brief")
   promptVersion String?  @map("prompt_version")
   createdBy     String?  @map("created_by")
   createdAt     DateTime @default(now()) @map("created_at")
@@ -418,16 +446,40 @@ model IdeaRevision {
   @@map("idea_revisions")
 }
 
+model Insight {
+  id            String       @id @default(uuid()) @db.Uuid
+  workspaceId   String       @map("workspace_id") @db.Uuid
+  projectId     String       @map("project_id") @db.Uuid
+  sourcePostId  String?      @map("source_post_id") @db.Uuid
+  ideaId        String?      @map("idea_id") @db.Uuid
+  kind          String
+  title         String
+  detail        String
+  evidenceType  String       @default("inference") @map("evidence_type")
+  commentIds    String[]     @default([]) @map("comment_ids") @db.Uuid
+  status        ReviewStatus @default(pending)
+  createdBy     String?      @map("created_by")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  @@index([workspaceId, projectId, kind, status])
+  @@index([sourcePostId])
+  @@index([ideaId])
+  @@map("insights")
+}
+
 model IdeaSource {
-  id            String   @id @default(uuid()) @db.Uuid
-  workspaceId   String   @map("workspace_id") @db.Uuid
-  projectId     String   @map("project_id") @db.Uuid
-  ideaId        String   @map("idea_id") @db.Uuid
-  sourcePostId  String?  @map("source_post_id") @db.Uuid
-  patternCardId String?  @map("pattern_card_id") @db.Uuid
-  createdAt     DateTime @default(now()) @map("created_at")
+  id                   String   @id @default(uuid()) @db.Uuid
+  workspaceId          String   @map("workspace_id") @db.Uuid
+  projectId            String   @map("project_id") @db.Uuid
+  ideaId               String   @map("idea_id") @db.Uuid
+  sourcePostId         String?  @map("source_post_id") @db.Uuid
+  patternCardId        String?  @map("pattern_card_id") @db.Uuid
+  patternCardVersionId String?  @map("pattern_card_version_id") @db.Uuid
+  createdAt            DateTime @default(now()) @map("created_at")
 
   @@index([ideaId])
+  @@index([patternCardVersionId])
   @@map("idea_sources")
 }
 
@@ -615,6 +667,43 @@ model GenerationOutput {
   @@map("generation_outputs")
 }
 
+model ContentDraft {
+  id             String             @id @default(uuid()) @db.Uuid
+  workspaceId    String             @map("workspace_id") @db.Uuid
+  projectId      String             @map("project_id") @db.Uuid
+  ideaId         String             @map("idea_id") @db.Uuid
+  status         ContentDraftStatus @default(pending_review)
+  currentVersion Int                @default(1) @map("current_version")
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+
+  @@index([workspaceId, projectId, status])
+  @@index([ideaId])
+  @@map("content_drafts")
+}
+
+model ContentDraftRevision {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @map("workspace_id") @db.Uuid
+  projectId      String   @map("project_id") @db.Uuid
+  contentDraftId String   @map("content_draft_id") @db.Uuid
+  version        Int
+  title          String
+  copy           String   @default("")
+  format         String
+  assetStrategy  String   @default("pending") @map("asset_strategy")
+  assetIds       String[] @default([]) @map("asset_ids") @db.Uuid
+  imageBrief     String?  @map("image_brief")
+  videoBrief     Json?    @map("video_brief")
+  sourceSnapshot Json     @map("source_snapshot")
+  createdBy      String?  @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([contentDraftId, version])
+  @@index([workspaceId, projectId, createdAt])
+  @@map("content_draft_revisions")
+}
+
 model ReleaseBatch {
   id          String   @id @default(uuid()) @db.Uuid
   workspaceId String   @map("workspace_id") @db.Uuid
@@ -651,6 +740,7 @@ model PublicationDraft {
   id             String            @id @default(uuid()) @db.Uuid
   workspaceId    String            @map("workspace_id") @db.Uuid
   projectId      String            @map("project_id") @db.Uuid
+  contentDraftId String?           @map("content_draft_id") @db.Uuid
   renditionId    String?           @map("rendition_id") @db.Uuid
   accountId      String?           @map("account_id") @db.Uuid
   platform       String
@@ -664,6 +754,7 @@ model PublicationDraft {
 
   @@unique([workspaceId, idempotencyKey])
   @@index([workspaceId, projectId, status])
+  @@index([contentDraftId])
   @@map("publication_drafts")
 }
 

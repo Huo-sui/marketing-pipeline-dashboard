@@ -9,6 +9,8 @@
 import type { TikTokDiscoveryResult } from "./tiktokAccountWorker.js";
 import { discoverTikTok } from "./tiktokAccountWorker.js";
 import { discoverXiaohongshu } from "./platforms/xiaohongshuPhoneAdapter.js";
+import { xiaohongshuPublisherConfigurationState } from "./platforms/xiaohongshuPublisher.js";
+import { normalizeLoopbackServiceBaseUrl } from "./platforms/loopbackServiceUrl.js";
 
 export type PlatformAdapterRequirements = {
   accountBinding: boolean;
@@ -25,8 +27,9 @@ export type PlatformAdapterStatus = {
   label: string;
   configured: boolean;
   mode: "phone" | "http";
-  capabilities: { phoneControl: boolean; identity: boolean; discovery: boolean; publishing: boolean; engagement: boolean };
+  capabilities: { phoneControl: boolean; identity: boolean; discovery: boolean; commentCollection: boolean; publishing: boolean; engagement: boolean };
   requirements: PlatformAdapterRequirements;
+  commentCollection?: { requirements: Pick<PlatformAdapterRequirements, "accountBinding" | "confirmedIdentity" | "phoneRunner"> };
   extraction: { requiredFields: PlatformDiscoveryRequiredField[] };
   detail: string;
 };
@@ -45,6 +48,8 @@ export type PlatformDiscoveryPost = {
 };
 export type PlatformDiscoveryLog = TikTokDiscoveryResult["logs"][number];
 export type PlatformDiscoveryResult = { posts: PlatformDiscoveryPost[]; logs: PlatformDiscoveryLog[] };
+export type PlatformComment = { externalId?: string; author?: string; body: string; likes?: number; publishedAt?: string };
+export type PlatformCommentCollectionResult = { comments: PlatformComment[]; logs: PlatformDiscoveryLog[] };
 
 export type PlatformAdapter = {
   id: string;
@@ -52,6 +57,7 @@ export type PlatformAdapter = {
   label: string;
   status: () => PlatformAdapterStatus;
   discover: (accountId: string, terms: string[], deviceId?: string) => Promise<PlatformDiscoveryResult>;
+  collectComments?: (accountId: string, post: Pick<PlatformDiscoveryPost, "externalId" | "canonicalUrl">, limit: number, deviceId?: string) => Promise<PlatformCommentCollectionResult>;
 };
 
 function emptyResult(): PlatformDiscoveryResult {
@@ -73,7 +79,7 @@ function createHttpAdapter(platform: string, label: string, envName: string): Pl
         label,
         configured: Boolean(baseUrl),
         mode: "http",
-        capabilities: { phoneControl: false, identity: false, discovery: Boolean(baseUrl), publishing: false, engagement: false },
+        capabilities: { phoneControl: false, identity: false, discovery: Boolean(baseUrl), commentCollection: false, publishing: false, engagement: false },
         requirements: { accountBinding: false, confirmedIdentity: false, phoneRunner: false, visualProvider: false },
         extraction: { requiredFields: ["externalId", "canonicalUrl", "title", "likes", "comments", "mediaType", "term", "rawPayload"] },
         detail: baseUrl ? `HTTP Adapter 已配置（${envName}）` : `等待配置 ${envName}`,
@@ -115,7 +121,7 @@ const tiktokAdapter: PlatformAdapter = {
   id: "tiktok-phone-v1",
   platform: "TikTok",
   label: "TikTok 手机 Adapter",
-  status: () => ({ platform: "TikTok", id: "tiktok-phone-v1", label: "TikTok 手机 Adapter", configured: true, mode: "phone", capabilities: { phoneControl: true, identity: true, discovery: true, publishing: false, engagement: false }, requirements: { accountBinding: true, confirmedIdentity: true, phoneRunner: true, visualProvider: true }, extraction: { requiredFields: ["externalId", "canonicalUrl", "author", "title", "likes", "comments", "publishedAt", "mediaType", "term", "rawPayload"] }, detail: "ADB + Appium UiAutomator2 + AutoGLM" }),
+  status: () => ({ platform: "TikTok", id: "tiktok-phone-v1", label: "TikTok 手机 Adapter", configured: true, mode: "phone", capabilities: { phoneControl: true, identity: true, discovery: true, commentCollection: false, publishing: false, engagement: false }, requirements: { accountBinding: true, confirmedIdentity: true, phoneRunner: true, visualProvider: true }, extraction: { requiredFields: ["externalId", "canonicalUrl", "author", "title", "likes", "comments", "publishedAt", "mediaType", "term", "rawPayload"] }, detail: "ADB + Appium UiAutomator2 + AutoGLM" }),
   discover: async (accountId, terms, deviceId) => discoverTikTok(accountId, terms, deviceId),
 };
 adapters.set(tiktokAdapter.platform, tiktokAdapter);
@@ -123,8 +129,18 @@ const xhsPhoneAdapter: PlatformAdapter = {
   id: "xiaohongshu-phone-v1",
   platform: "小红书",
   label: "小红书手机 Adapter",
-  status: () => ({ platform: "小红书", id: "xiaohongshu-phone-v1", label: "小红书手机 Adapter", configured: true, mode: "phone", capabilities: { phoneControl: true, identity: true, discovery: true, publishing: false, engagement: false }, requirements: { accountBinding: true, confirmedIdentity: true, phoneRunner: true, visualProvider: false }, extraction: { requiredFields: ["externalId", "canonicalUrl", "author", "title", "likes", "comments", "publishedAt", "mediaType", "term", "rawPayload"] }, detail: "Android Driver + 小红书字段清单 Playbook（作者/标题/指标/发布时间/媒体类型/真实链接）" }),
+  status: () => { let commentBot: "configured" | "missing" | "invalid" = "missing"; if (process.env.XIAOHONGSHU_COMMENT_BOT_BASE_URL?.trim()) { try { normalizeLoopbackServiceBaseUrl(process.env.XIAOHONGSHU_COMMENT_BOT_BASE_URL, "XIAOHONGSHU_COMMENT_BOT_BASE_URL"); commentBot = "configured"; } catch { commentBot = "invalid"; } } const publisher = xiaohongshuPublisherConfigurationState(); return { platform: "小红书", id: "xiaohongshu-phone-v1", label: "小红书手机 Adapter", configured: true, mode: "phone", capabilities: { phoneControl: true, identity: true, discovery: true, commentCollection: commentBot === "configured", publishing: publisher === "configured", engagement: false }, requirements: { accountBinding: true, confirmedIdentity: true, phoneRunner: true, visualProvider: false }, commentCollection: { requirements: { accountBinding: true, confirmedIdentity: true, phoneRunner: false } }, extraction: { requiredFields: ["externalId", "canonicalUrl", "author", "title", "likes", "comments", "publishedAt", "mediaType", "term", "rawPayload"] }, detail: `Android Driver + 小红书字段清单 Playbook；评论 Bot ${commentBot === "configured" ? "已配置" : commentBot === "invalid" ? "地址无效" : "未配置"}；Publisher API ${publisher === "configured" ? "已配置" : publisher === "invalid" ? "地址无效" : "未配置"}` }; },
   discover: async (accountId, terms, deviceId) => discoverXiaohongshu(accountId, terms, deviceId),
+  collectComments: async (accountId, post, limit) => {
+    const baseUrl = normalizeLoopbackServiceBaseUrl(process.env.XIAOHONGSHU_COMMENT_BOT_BASE_URL, "XIAOHONGSHU_COMMENT_BOT_BASE_URL");
+    if (!baseUrl) throw new Error("小红书评论 Bot 尚未配置");
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/comments`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json", ...(process.env.XIAOHONGSHU_COMMENT_BOT_KEY ? { Authorization: `Bearer ${process.env.XIAOHONGSHU_COMMENT_BOT_KEY}` } : {}) }, body: JSON.stringify({ platform: "小红书", accountId, externalId: post.externalId, canonicalUrl: post.canonicalUrl, limit }), signal: AbortSignal.timeout(120_000) });
+    if (!response.ok) throw new Error(`小红书评论 Bot 返回 HTTP ${response.status}`);
+    const payload = await response.json() as { comments?: unknown; logs?: unknown };
+    const comments = Array.isArray(payload.comments) ? payload.comments.flatMap((value) => { if (!value || typeof value !== "object") return []; const item = value as Record<string, unknown>; if (typeof item.body !== "string" || !item.body.trim()) return []; return [{ externalId: typeof item.externalId === "string" ? item.externalId : undefined, author: typeof item.author === "string" ? item.author : undefined, body: item.body, likes: typeof item.likes === "number" ? item.likes : undefined, publishedAt: typeof item.publishedAt === "string" ? item.publishedAt : undefined }]; }) : [];
+    const logs = Array.isArray(payload.logs) ? payload.logs.flatMap((value) => { if (!value || typeof value !== "object") return []; const item = value as Record<string, unknown>; return [{ timestamp: typeof item.timestamp === "string" ? item.timestamp : new Date().toISOString(), level: item.level === "error" ? "error" as const : item.level === "warn" ? "warn" as const : "info" as const, eventType: typeof item.eventType === "string" ? item.eventType : "comment_bot_event", message: typeof item.message === "string" ? item.message : "评论 Bot 事件" }]; }) : [];
+    return { comments, logs };
+  },
 };
 adapters.set(xhsPhoneAdapter.platform, xhsPhoneAdapter);
 for (const [platform, envName] of [["抖音", "DOUYIN_API_BASE_URL"], ["Reddit", "REDDIT_API_BASE_URL"], ["X", "X_API_BASE_URL"], ["Instagram", "INSTAGRAM_API_BASE_URL"]] as const) {
@@ -134,7 +150,7 @@ for (const [platform, envName] of [["抖音", "DOUYIN_API_BASE_URL"], ["Reddit",
 export function getPlatformAdapter(platform: string): PlatformAdapter | undefined { return adapters.get(platform); }
 export function listPlatformAdapters(): PlatformAdapterStatus[] { return [...adapters.values()].map((adapter) => adapter.status()); }
 export function platformAdapterStatus(platform: string): PlatformAdapterStatus {
-  return getPlatformAdapter(platform)?.status() ?? { platform, id: "unregistered", label: `${platform} Adapter`, configured: false, mode: "http", capabilities: { phoneControl: false, identity: false, discovery: false, publishing: false, engagement: false }, requirements: { accountBinding: false, confirmedIdentity: false, phoneRunner: false, visualProvider: false }, extraction: { requiredFields: [] }, detail: "平台未注册" };
+  return getPlatformAdapter(platform)?.status() ?? { platform, id: "unregistered", label: `${platform} Adapter`, configured: false, mode: "http", capabilities: { phoneControl: false, identity: false, discovery: false, commentCollection: false, publishing: false, engagement: false }, requirements: { accountBinding: false, confirmedIdentity: false, phoneRunner: false, visualProvider: false }, extraction: { requiredFields: [] }, detail: "平台未注册" };
 }
 
 export function emptyPlatformDiscovery(): PlatformDiscoveryResult { return emptyResult(); }

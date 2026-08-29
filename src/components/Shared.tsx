@@ -23,7 +23,7 @@ export function PostActions({ post, onAction, onOpen }: { post: SourcePost; onAc
   return <div className="action-group">
     <Tooltip title="查看详情"><Button className="icon-button" size="small" icon={<Eye size={14} />} onClick={onOpen} /></Tooltip>
     <Tooltip title="打开原帖"><Button className="icon-button" size="small" icon={<ExternalLink size={14} />} href={post.canonicalUrl} target="_blank" rel="noreferrer" /></Tooltip>
-    <Tooltip title="生成评论"><Button className="icon-button" size="small" type={post.action === "engage" ? "primary" : "default"} icon={<MessageCircle size={14} />} onClick={() => onAction("engage")} /></Tooltip>
-    <Tooltip title="做同款"><Button className="icon-button" size="small" type={post.action === "adapt" ? "primary" : "default"} icon={<WandSparkles size={14} />} onClick={() => onAction("adapt")} /></Tooltip>
+    <Tooltip title="标记为评论洞察候选"><Button className="icon-button" size="small" type={post.action === "engage" ? "primary" : "default"} icon={<MessageCircle size={14} />} onClick={() => onAction("engage")} /></Tooltip>
+    <Tooltip title="标记为选题候选"><Button className="icon-button" size="small" type={post.action === "adapt" ? "primary" : "default"} icon={<WandSparkles size={14} />} onClick={() => onAction("adapt")} /></Tooltip>
   </div>;
 }

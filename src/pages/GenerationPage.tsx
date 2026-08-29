@@ -1,165 +1,94 @@
-import {
-  Alert,
-  Button,
-  Checkbox,
-  Descriptions,
-  Divider,
-  Drawer,
-  Form,
-  Input,
-  Progress,
-  Space,
-  Tag,
-  message,
-} from "antd";
-import { CheckCheck, Eye, RotateCcw, Send, SlidersHorizontal } from "lucide-react";
+import { Alert, Button, Descriptions, Divider, Drawer, Form, Input, List, Select, Space, Tag, message } from "antd";
+import { CheckCheck, ClipboardCopy, Edit3, ImagePlus, RefreshCw, Send, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { PageHeader, Panel, PlatformBadge } from "../components/Shared";
 import { controlApi } from "../services/controlApi";
 import { useDemoState } from "../state/demoStateContext";
-import type { GenerationJob, Platform } from "../types";
+import type { ContentDraftRecord, Platform } from "../types";
 
-const statusMap = {
-  running: ["生成中", "status-running"],
-  review: ["待审计", "status-review"],
-  ready: ["已就绪", "status-ready"],
-  queued: ["等待中", "status-disconnected"],
-} as const;
-
-const platforms: Platform[] = ["TikTok", "抖音", "小红书", "Reddit", "X", "Instagram"];
-const previewImages: Record<string, string> = {
-  "job-01": "https://images.unsplash.com/photo-1552820728-8b83bb6b773f?auto=format&fit=crop&w=480&q=80",
-  "job-02": "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=480&q=80",
-  "job-03": "https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=480&q=80",
+const statusMap: Record<ContentDraftRecord["status"], { label: string; color: string }> = {
+  pending_review: { label: "待人工审核", color: "gold" },
+  approved: { label: "已批准", color: "green" },
+  rejected: { label: "已退回", color: "red" },
 };
+const assetLabels: Record<string, string> = { pending: "待判断", matched: "直接使用项目资产", needs_generation: "按爆款结构生成新图", not_applicable: "不需要媒体资产" };
+
+type DraftEditForm = { title: string; copy: string; assetStrategy: string; imageBrief?: string; videoPrompt?: string };
+type ReleaseChoice = { platform?: Platform; accountId?: string };
 
 export function GenerationPage() {
-  const { selectedProject } = useDemoState();
-  const [jobs, setJobs] = useState<GenerationJob[]>([]);
-  const [detailJob, setDetailJob] = useState<GenerationJob | null>(null);
-  const [selected, setSelected] = useState<Record<string, Platform[]>>(
-    {},
-  );
-  const [editForm] = Form.useForm<Pick<GenerationJob, "prompt" | "copy">>();
+  const { selectedProject, accounts, accountBindings } = useDemoState();
+  const [drafts, setDrafts] = useState<ContentDraftRecord[]>([]);
+  const [detailDraft, setDetailDraft] = useState<ContentDraftRecord | null>(null);
+  const [choices, setChoices] = useState<Record<string, ReleaseChoice>>({});
+  const [editForm] = Form.useForm<DraftEditForm>();
   const [messageApi, contextHolder] = message.useMessage();
 
-  useEffect(() => { if (!selectedProject) return; void controlApi.listGenerationRuns(selectedProject).then(setJobs).catch((error: Error) => messageApi.error(error.message)); }, [selectedProject, messageApi]);
+  const refresh = () => {
+    if (!selectedProject) return;
+    void controlApi.listContentDrafts(selectedProject).then(setDrafts).catch((error: Error) => messageApi.error(error.message));
+  };
+  useEffect(() => {
+    let active = true;
+    setDrafts([]); setDetailDraft(null); setChoices({});
+    if (selectedProject) void controlApi.listContentDrafts(selectedProject).then((records) => { if (active) setDrafts(records); }).catch((error: Error) => { if (active) messageApi.error(error.message); });
+    return () => { active = false; };
+  }, [selectedProject, messageApi]);
 
-  const readyJobs = useMemo(() => jobs.filter((job) => job.status === "ready" && job.ideaId), [jobs]);
-  const selectedFor = (jobId: string) => selected[jobId] ?? [];
-  const versions = readyJobs.reduce((sum, job) => sum + selectedFor(job.id).length, 0);
+  const publishingAccountIds = useMemo(() => new Set(accountBindings.filter((binding) => binding.projectId === selectedProject && binding.roles.includes("publishing")).map((binding) => binding.accountId)), [accountBindings, selectedProject]);
+  const publishingAccounts = accounts.filter((account) => publishingAccountIds.has(account.id) && account.lifecycleStatus === "active");
 
-  const openJob = (job: GenerationJob) => {
-    setDetailJob(job);
-    editForm.setFieldsValue({ prompt: job.prompt, copy: job.copy });
+  const openDraft = (draft: ContentDraftRecord) => {
+    setDetailDraft(draft);
+    editForm.setFieldsValue({ title: draft.revision.title, copy: draft.revision.copy, assetStrategy: draft.revision.assetStrategy, imageBrief: draft.revision.imageBrief, videoPrompt: typeof draft.revision.videoBrief?.prompt === "string" ? draft.revision.videoBrief.prompt : "" });
   };
 
-  const saveJob = async (values: Pick<GenerationJob, "prompt" | "copy">) => {
-    if (!detailJob) return;
-    const updated = await controlApi.patchGenerationRun(detailJob.id, values);
-    setJobs((items) => items.map((job) => job.id === detailJob.id ? { ...job, ...updated, ...values } : job));
-    setDetailJob(null);
-    messageApi.success("生成规格已保存");
+  const saveDraft = async (values: DraftEditForm) => {
+    if (!detailDraft) return;
+    await controlApi.patchContentDraft(selectedProject, detailDraft.id, { title: values.title, copy: values.copy, assetStrategy: values.assetStrategy, imageBrief: values.imageBrief ?? "", videoBrief: detailDraft.revision.format === "视频" ? { status: "reserved", prompt: values.videoPrompt ?? "" } : undefined, createdBy: "dashboard" });
+    setDetailDraft(null);
+    refresh();
+    messageApi.success("修改已保存为新的草稿版本，并重置为待审核");
   };
 
-  const markReady = (job: GenerationJob) => {
-    messageApi.info(`任务 ${job.id} 尚未有真实 Provider 输出，不能标记为已就绪`);
+  const review = async (draft: ContentDraftRecord, status: ContentDraftRecord["status"]) => {
+    await controlApi.reviewContentDraft(selectedProject, draft.id, status);
+    refresh();
+    messageApi.success(status === "approved" ? "草稿已批准，可配置发布平台与账号" : "草稿已退回");
   };
 
-  const createDrafts = () => {
-    if (versions === 0) {
-      messageApi.warning("至少选择一个目标平台后才能创建 PublicationDraft");
-      return;
-    }
-    void Promise.all(readyJobs.flatMap((job) => selectedFor(job.id).map((platform) => controlApi.createPublicationDraft({ projectId: selectedProject, platform, ideaId: job.ideaId }))))
-      .then(() => messageApi.success("PublicationDraft 已写入数据库"))
-      .catch((error: Error) => messageApi.error(error.message));
+  const copyRewritePrompt = async (draft: ContentDraftRecord) => {
+    await navigator.clipboard.writeText(`请使用 $content-draft-replication 修改 Marketing Pipeline 的待审草稿 ${draft.id}。读取其锁定的选题与原帖快照，保留来源溯源，按我的下一条要求重写文案；若涉及配图，只能复用已登记项目资产或生成新的结构化相似图片，不得复制原帖素材。保存为新草稿版本，不要批准或发布。`);
+    messageApi.success("已复制 Codex 返工指令");
   };
 
-  return <>
-    {contextHolder}
-    <PageHeader
-      title="生成、审计与发布决策"
-      meta="批准内容后生成目标平台版本；账号与发布执行将在后续纵切中接入"
-      actions={<Button icon={<SlidersHorizontal size={15} />} onClick={() => messageApi.info("Worker 配置将在 API 接入阶段迁移到 Provider 设置")}>Worker 配置</Button>}
-    />
-    <Alert className="section-alert" type="info" showIcon message="生成 Provider 尚未配置；页面只展示数据库中的真实任务，不会用 Demo 任务冒充执行结果。" />
-    <Panel title="生成任务" caption="PostgreSQL GenerationRun">
-      <div className="progress-stack">
-        {jobs.map((job) => <div className="job-row generation-job-row" key={job.id}>
-          <div>
-            <div className="job-name">{job.title}</div>
-            <div className="job-sub">{job.provider} · {job.updated}{job.ideaId && <> · <Link to="/ideas">Idea {job.ideaId}</Link></>}</div>
-          </div>
-          <div>{job.type}</div>
-          <Progress percent={job.progress} showInfo={false} strokeColor="#3f6f52" />
-          <span className={`status-badge ${statusMap[job.status][1]}`}>{statusMap[job.status][0]}</span>
-          <Space>
-            <Button size="small" icon={<Eye size={13} />} onClick={() => openJob(job)}>审计</Button>
-            {job.status === "review" && <Button size="small" type="primary" icon={<CheckCheck size={13} />} onClick={() => markReady(job)}>通过</Button>}
-          </Space>
-        </div>)}
-      </div>
+  const copyImagePrompt = async (draft: ContentDraftRecord) => {
+    await navigator.clipboard.writeText(`请使用 $content-draft-replication 为 Marketing Pipeline 的待审草稿 ${draft.id} 重新生成配图。先读取项目资产和 imageBrief；输出必须是原创图片或明确复用项目资产，保留模型/提示词/资产来源，并回写新的草稿版本。不要使用原帖图片，不要发布。`);
+    messageApi.success("已复制 Codex 重新配图指令");
+  };
+
+  const createPublication = async (draft: ContentDraftRecord) => {
+    const choice = choices[draft.id] ?? {};
+    if (!choice.platform || !choice.accountId) { messageApi.warning("请先选择目标平台和项目内发布账号"); return; }
+    await controlApi.createPublicationDraft({ projectId: selectedProject, contentDraftId: draft.id, platform: choice.platform, accountId: choice.accountId });
+    messageApi.success("已创建可溯源的 PublicationDraft，请到发布队列做最后确认");
+  };
+
+  return <>{contextHolder}
+    <PageHeader title="待审草稿" meta="文案、配图策略与来源快照均版本化；批准前可反复人工或 Codex 返工" actions={<Button icon={<RefreshCw size={15} />} onClick={refresh}>刷新</Button>} />
+    <Alert className="section-alert" type="info" showIcon message="草稿是独立工作流记录，不等同于生成任务。视频目前只保留制作 Brief 和生成位置，不会创建伪视频成果。" />
+    <Panel title="草稿审核" caption="ContentDraft + ContentDraftRevision">
+      {drafts.length === 0 ? <div className="empty-state"><strong>还没有待审草稿</strong>先在选题箱批准选题，再将它送入这里。</div> : <div className="progress-stack">{drafts.map((draft) => <div className="job-row generation-job-row" key={draft.id}><div><div className="job-name">{draft.revision.title}</div><div className="job-sub">v{draft.revision.version} · 选题 {draft.ideaId} · {draft.revision.sourceSnapshot.sourcePosts.length} 条原帖来源</div></div><div>{draft.revision.format}</div><div className="job-sub">{assetLabels[draft.revision.assetStrategy] ?? draft.revision.assetStrategy}</div><Tag color={statusMap[draft.status].color}>{statusMap[draft.status].label}</Tag><Space wrap><Button size="small" icon={<Edit3 size={13} />} onClick={() => openDraft(draft)}>审核编辑</Button><Button size="small" icon={<ClipboardCopy size={13} />} onClick={() => copyRewritePrompt(draft)}>Codex 返工</Button>{draft.status !== "approved" && <Button size="small" type="primary" icon={<CheckCheck size={13} />} onClick={() => review(draft, "approved")}>批准</Button>}{draft.status !== "rejected" && <Button size="small" danger icon={<X size={13} />} onClick={() => review(draft, "rejected")}>退回</Button>}</Space></div>)}</div>}
     </Panel>
 
-    <div className="release-layout generation-decision-layout">
-      <Panel title="发布决策" caption="生成层 · 只显示审计通过的成果">
-        {readyJobs.length === 0 ? <div className="empty-state"><strong>暂无可配置成果</strong>先通过生成审计，再选择目标平台。</div> : <div className="release-list">
-          {readyJobs.map((job) => <div className="release-row release-row-expanded" key={job.id}>
-            <img className="release-preview" src={previewImages[job.id]} alt={`${job.title} Demo 预览`} />
-            <div>
-              <div className="job-name">{job.title}</div>
-              <div className="job-sub">{job.type} · Idea {job.ideaId} · {job.artifacts?.map((artifact) => artifact.id).join(" / ")}</div>
-            </div>
-            <div className="release-platform-config">
-              <Checkbox.Group value={selectedFor(job.id)} onChange={(values) => setSelected((state) => ({ ...state, [job.id]: values as Platform[] }))}>
-                <div className="platform-checks">
-                  {platforms.map((platform) => <Checkbox key={platform} value={platform}><PlatformBadge platform={platform} /></Checkbox>)}
-                </div>
-              </Checkbox.Group>
-            </div>
-          </div>)}
-        </div>}
-      </Panel>
-      <Panel title="决策摘要" caption="创建 Draft 前核对">
-        <div className="summary-list">
-          <div className="summary-row"><span className="muted">已通过成果</span><strong>{readyJobs.length}</strong></div>
-          <div className="summary-row"><span className="muted">平台版本</span><strong>{versions}</strong></div>
-          <div className="summary-row"><span className="muted">发布账号</span><strong>本轮不接入</strong></div>
-          <div className="summary-divider" />
-          <div className="summary-row"><span className="muted">Publisher</span><strong>未接入</strong></div>
-          <Button type="primary" size="large" block icon={<Send size={15} />} onClick={createDrafts}>确认并创建 Draft</Button>
-          <Space className="muted" size={5}>Draft 只携带已确认决策，发布层不得改写</Space>
-        </div>
-      </Panel>
-    </div>
+    <Panel title="发布决策" caption="只有已批准草稿可创建平台发布对象">
+      {drafts.filter((draft) => draft.status === "approved").length === 0 ? <div className="empty-state">还没有已批准草稿</div> : <div className="release-list">{drafts.filter((draft) => draft.status === "approved").map((draft) => { const choice = choices[draft.id] ?? {}; const accountOptions = publishingAccounts.filter((account) => !choice.platform || account.platform === choice.platform); return <div className="release-row release-row-expanded" key={draft.id}><div><div className="job-name">{draft.revision.title}</div><div className="job-sub">草稿 v{draft.revision.version} · 原帖 {draft.revision.sourceSnapshot.sourcePosts.length} 条 · {assetLabels[draft.revision.assetStrategy] ?? draft.revision.assetStrategy}</div></div><div className="release-platform-config"><Space wrap><Select placeholder="目标平台" style={{ width: 150 }} value={choice.platform} options={Array.from(new Set(publishingAccounts.map((account) => account.platform))).map((platform) => ({ value: platform, label: platform }))} onChange={(platform) => setChoices((current) => ({ ...current, [draft.id]: { platform, accountId: undefined } }))} /><Select placeholder="发布账号" style={{ width: 200 }} value={choice.accountId} options={accountOptions.map((account) => ({ value: account.id, label: `${account.displayName || account.handle || account.label} · ${account.platform}` }))} onChange={(accountId) => setChoices((current) => ({ ...current, [draft.id]: { ...choice, accountId } }))} /><Button type="primary" icon={<Send size={14} />} onClick={() => createPublication(draft)}>创建发布对象</Button></Space></div></div>; })}</div>}
+      {publishingAccounts.length === 0 && <Alert type="warning" showIcon message="当前项目没有带 Publishing 角色的有效账号；发布平台与账号不会在 Publisher 内部临时猜测。" />}
+    </Panel>
 
-    <Drawer
-      title="生成结果审计"
-      width={560}
-      open={Boolean(detailJob)}
-      onClose={() => setDetailJob(null)}
-      extra={<Button type="primary" icon={<RotateCcw size={14} />} onClick={() => editForm.submit()}>保存并返工</Button>}
-    >
-      {detailJob && <Form form={editForm} layout="vertical" onFinish={saveJob}>
-        <Descriptions column={1} size="small" bordered>
-          <Descriptions.Item label="任务">{detailJob.title}</Descriptions.Item>
-          <Descriptions.Item label="Provider">{detailJob.provider}</Descriptions.Item>
-          <Descriptions.Item label="状态"><Tag className={`status-badge ${statusMap[detailJob.status][1]}`}>{statusMap[detailJob.status][0]}</Tag></Descriptions.Item>
-          <Descriptions.Item label="Idea"><Link to="/ideas">{detailJob.ideaId ?? "—"}</Link></Descriptions.Item>
-        </Descriptions>
-        <Divider orientation="left">文本和生成规格</Divider>
-        <Form.Item name="copy" label="文案"><Input.TextArea rows={5} placeholder="纯文本也会有独立的 text Artifact ID" /></Form.Item>
-        <Form.Item name="prompt" label="Prompt / CreativeSpec"><Input.TextArea rows={8} placeholder="视频、图像和文案的版本化规格" /></Form.Item>
-        <Divider orientation="left">Artifacts</Divider>
-        <div className="artifact-list">
-          {(detailJob.artifacts ?? []).map((artifact) => <div className="artifact-row" key={artifact.id}>
-            <div><strong>{artifact.label}</strong><div className="job-sub">{artifact.id} · {artifact.provider} · {artifact.version}</div></div>
-            <Tag color={artifact.status === "ready" ? "green" : artifact.status === "review" ? "gold" : "red"}>{artifact.status}</Tag>
-          </div>)}
-        </div>
-      </Form>}
+    <Drawer title="草稿内容、素材与来源" width={650} open={Boolean(detailDraft)} onClose={() => setDetailDraft(null)} extra={<Button type="primary" onClick={() => editForm.submit()}>保存新版本</Button>}>
+      {detailDraft && <><Descriptions column={1} size="small" bordered><Descriptions.Item label="草稿 ID">{detailDraft.id}</Descriptions.Item><Descriptions.Item label="来源选题"><Link to="/ideas">{detailDraft.revision.sourceSnapshot.idea.title} · v{detailDraft.revision.sourceSnapshot.idea.version}</Link></Descriptions.Item><Descriptions.Item label="草稿版本">v{detailDraft.revision.version}</Descriptions.Item><Descriptions.Item label="状态"><Tag color={statusMap[detailDraft.status].color}>{statusMap[detailDraft.status].label}</Tag></Descriptions.Item><Descriptions.Item label="资产来源">{assetLabels[detailDraft.revision.assetStrategy] ?? detailDraft.revision.assetStrategy}</Descriptions.Item><Descriptions.Item label="视频处理">{detailDraft.revision.format === "视频" ? "预留 Agent 生成位置，尚无视频成果" : "不适用"}</Descriptions.Item></Descriptions><Divider orientation="left">原帖溯源快照</Divider><List size="small" dataSource={detailDraft.revision.sourceSnapshot.sourcePosts} renderItem={(post) => <List.Item actions={[<Button key="source" href={post.canonicalUrl} target="_blank" rel="noreferrer">打开原帖</Button>]}><List.Item.Meta title={<Space><PlatformBadge platform={post.platform} /><strong>{post.title}</strong></Space>} description={`${post.author} · ${post.externalId}`} /></List.Item>} /><Divider orientation="left">编辑并返工</Divider><Form form={editForm} layout="vertical" onFinish={saveDraft}><Form.Item name="title" label="标题" rules={[{ required: true, whitespace: true }]}><Input /></Form.Item><Form.Item name="copy" label="文案" rules={[{ required: true, whitespace: true }]}><Input.TextArea rows={8} /></Form.Item><Form.Item name="assetStrategy" label="图片/资产策略"><Select options={[{ value: "matched", label: "直接使用项目资产" }, { value: "needs_generation", label: "按爆款结构生成原创图片" }, { value: "not_applicable", label: "不需要媒体资产" }, { value: "pending", label: "待判断" }]} /></Form.Item><Form.Item name="imageBrief" label="配图 Brief"><Input.TextArea rows={5} /></Form.Item>{detailDraft.revision.format === "视频" && <Form.Item name="videoPrompt" label="视频生成预留 Brief"><Input.TextArea rows={5} /></Form.Item>}<Space wrap><Button icon={<ClipboardCopy size={14} />} onClick={() => copyRewritePrompt(detailDraft)}>复制 Codex 返工指令</Button><Button icon={<ImagePlus size={14} />} onClick={() => copyImagePrompt(detailDraft)}>复制重新配图指令</Button></Space></Form></>}
     </Drawer>
   </>;
 }

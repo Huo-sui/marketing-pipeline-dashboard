@@ -15,7 +15,7 @@ export const initialSourcePosts: SourcePost[] = [
     image: "https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=720&q=80", action: "unreviewed", reviewState: "pending",
     canonicalUrl: "https://www.tiktok.com/@smallstudio/video/demo-post-01", externalId: "tt-demo-001", capturedAt: "今天 10:04",
     evidence: { signals: ["互动速度位于话题前 2%", "评论集中讨论核心机制"], scoreBreakdown: [{ label: "互动速度", value: "94" }, { label: "话题相关度", value: "92" }, { label: "可复刻结构", value: "96" }], capturedBy: "tiktok.discovery.demo", capturedAt: "今天 10:04" },
-    patternCard: { hook: "先展示失败结果，再延迟揭示真正机制", hookSeconds: 3, structure: "失败结果 → 留白 → 机制解释 → 结果回收", shotRhythm: "前 3 秒快切，后段单镜头解释", onScreenText: "核心机制在第 3 秒出现", proofPoint: "观众评论集中追问机制", cta: "你会先看懂还是先误解？", replaceableElements: ["角色素材", "UI 截图", "字幕文案"] },
+    patternCard: { summary: "用误解与揭示制造认知反差。", viralReasons: [{ claim: "前 3 秒留下信息缺口", evidence: ["先展示失败结果，再解释机制"], confidence: "medium" }], production: { mediaType: "video", hook: "先展示失败结果，再延迟揭示真正机制", structure: ["失败结果", "留白", "机制解释", "结果回收"], videoMethod: ["前 3 秒快切", "后段单镜头解释"], writingMethod: ["先提出误解，再给出机制证据"], imageTypes: ["项目 UI 截图", "时间轴字幕"] }, replicationDecision: { verdict: "adapt", reason: "结构可迁移，但角色与 UI 必须替换为项目资产。", portableElements: ["认知反差", "延迟揭示"], mustReplace: ["角色素材", "UI 截图", "字幕文案"] }, topicCandidates: [], insights: [], limitations: ["演示数据，不代表真实平台证据"] },
   },
   {
     id: "post-02", platform: "Reddit", author: "u/turnbased_dev", title: "开发日志：只改了命中反馈，玩家却认为整个战斗系统重做了",
@@ -48,7 +48,7 @@ export const initialSourcePosts: SourcePost[] = [
     image: "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=720&q=80", action: "adapt", reviewState: "approved",
     canonicalUrl: "https://www.douyin.com/video/demo-post-05", externalId: "dy-demo-005", capturedAt: "今天 08:22",
     evidence: { signals: ["同话题小时互动速度第一", "前两秒视觉变化明确"], scoreBreakdown: [{ label: "互动速度", value: "93" }, { label: "前两秒钩子", value: "96" }, { label: "可替换素材", value: "90" }], capturedBy: "douyin.discovery.demo", capturedAt: "今天 08:22" },
-    patternCard: { hook: "把变化放大到观众第一眼就能看懂", hookSeconds: 2, structure: "原始片段 → 放大变化 → 前后对比 → 结论", shotRhythm: "两秒内完成一次明显变化", onScreenText: "看不懂时，先改变反馈", proofPoint: "观众能准确描述差异", cta: "你的反馈是否足够明显？", replaceableElements: ["角色动画", "命中特效", "对比字幕"] },
+    patternCard: { summary: "用高辨识度的前后对比降低理解成本。", viralReasons: [{ claim: "视觉变化在两秒内可被识别", evidence: ["原始片段与放大变化直接对照"], confidence: "medium" }], production: { mediaType: "video", hook: "把变化放大到观众第一眼就能看懂", structure: ["原始片段", "放大变化", "前后对比", "结论"], videoMethod: ["两秒内完成一次明显变化", "同场景对齐比较"], writingMethod: ["用问题收束对比结论"], imageTypes: ["前后对比帧", "差异标注"] }, replicationDecision: { verdict: "adapt", reason: "对比方式可迁移，具体游戏画面必须使用项目素材。", portableElements: ["前后对比", "两秒视觉钩子"], mustReplace: ["角色动画", "命中特效", "对比字幕"] }, topicCandidates: [], insights: [], limitations: ["演示数据，不代表真实平台证据"] },
   },
 ];
 

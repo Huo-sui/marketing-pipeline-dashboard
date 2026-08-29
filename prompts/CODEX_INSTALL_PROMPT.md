@@ -1,5 +1,7 @@
 # Copy this prompt into Codex
 
+[简体中文版](CODEX_INSTALL_PROMPT.zh-CN.md)
+
 Install and start the complete Marketing Pipeline on my local machine: Core
 mode (Dashboard, Control API, database, and shared pipeline) plus Android Phone
 mode. Repository:
@@ -39,9 +41,11 @@ physical Android phone is not success.
    Guide me through registration and key creation. Tell me to paste the key
    directly into the repository's local `.env` after `ZHIPU_API_KEY=`. Never ask
    me to paste the key into chat, never echo it, and never commit `.env`.
-6. Run `npm start` without exposing it beyond `127.0.0.1`. Keep it running, wait
-   for readiness, and run `npm run health`.
-7. Open or provide http://127.0.0.1:3210. Guide me through adding the detected
+6. Run `npm start` without exposing it beyond `127.0.0.1`. Keep it running,
+   wait for readiness, and run `npm run health` from a second terminal. If the
+   configured Dashboard port is occupied, choose a free
+   `MARKETING_PIPELINE_PORT` in `.env`; never work around it with `0.0.0.0`.
+7. Open or provide the local Dashboard URL (3210 by default). Guide me through adding the detected
    phone-backed account, logging in on the phone, and confirming the real
    detected account identity.
 8. Finish only after reporting: service URL, health result, redacted phone

@@ -1,0 +1,83 @@
+name: Bug report / Bug 报告
+description: Report a reproducible product problem without private account or device data. / 报告可复现问题，请勿包含私密账号或设备数据。
+title: "[Bug]: "
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Search existing issues first. Redact API keys, cookies, handles, device serials, local user paths, screenshots, UI dumps, database exports, and logs.
+
+        感谢反馈。请先搜索已有 Issue，并删除 API Key、Cookie、账号 Handle、设备序列号、本机用户名路径、截图、UI dump、数据库导出和日志。
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 范围
+      options:
+        - Installation or startup / 安装或启动
+        - Dashboard or Control API / Dashboard 或 Control API
+        - Topic Radar or pipeline / 话题雷达或 Pipeline
+        - Android phone infrastructure / Android 手机基础设施
+        - Platform adapter / 平台 Adapter
+        - Documentation / 文档
+        - Other / 其他
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit / 版本或 Commit
+      placeholder: "v0.1.0 or git commit SHA"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment / 环境
+      description: OS, Node.js version, npm version, and browser. Do not include a local username. / 系统、Node.js、npm 与浏览器版本；不要填写本机用户名。
+      placeholder: "Windows 11; Node 24.x; npm 11.x; Chrome"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction / 复现步骤
+      description: Give the smallest reliable sequence, starting from a known state. / 从明确初始状态开始，给出最小稳定步骤。
+      placeholder: |
+        1. Start with ...
+        2. Run/click ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result / 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result / 实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence / 已脱敏证据
+      description: Paste only the relevant error or check. Review it manually first. / 只粘贴相关错误或检查项，并先人工审查。
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations / 确认
+      options:
+        - label: I searched existing issues. / 我已搜索已有 Issue。
+          required: true
+        - label: I removed secrets, account data, serials, personal paths, and other private evidence. / 我已删除 Secret、账号资料、序列号、个人路径及其他隐私证据。
+          required: true
+        - label: I did not use mock or fabricated data to claim a live platform result. / 我没有用 Mock 或伪造数据声称真实平台运行成功。
+          required: true

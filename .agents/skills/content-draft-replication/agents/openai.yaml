@@ -1,0 +1,6 @@
+interface:
+  display_name: "待审草稿复刻"
+  short_description: "把已批准选题改写成可追溯文案与原创项目配图"
+  default_prompt: "Use $content-draft-replication to turn approved ideas into original review drafts with provenance-preserving project assets."
+policy:
+  allow_implicit_invocation: true

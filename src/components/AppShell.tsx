@@ -13,10 +13,10 @@ const nav = [
   { to: "/projects", label: "项目", icon: FolderKanban },
   { to: "/assets", label: "项目资产", icon: Images },
   { to: "/topics", label: "话题雷达", icon: RadioTower },
-  { to: "/source-posts", label: "爆帖收件箱", icon: FileText },
-  { to: "/ideas", label: "Idea 审核", icon: Sparkles },
-  { to: "/generation", label: "生成与决策", icon: Bot },
-  { to: "/release", label: "发布执行", icon: Send },
+  { to: "/source-posts", label: "爆帖分析", icon: FileText },
+  { to: "/ideas", label: "选题箱", icon: Sparkles },
+  { to: "/generation", label: "待审草稿", icon: Bot },
+  { to: "/release", label: "发布队列", icon: Send },
   { to: "/runs", label: "任务与审计", icon: ClipboardList },
 ];
 
@@ -86,7 +86,7 @@ export function AppShell() {
             suffixIcon={<ChevronDown size={14} />}
             options={activeProjects.map((project) => ({ value: project.id, label: project.name }))}
           />
-          <Input className="top-search" style={{ maxWidth: 340 }} prefix={<Search size={15} color="#8a938c" />} placeholder="搜索帖子、Idea 或任务" />
+          <Input className="top-search" style={{ maxWidth: 340 }} prefix={<Search size={15} color="#8a938c" />} placeholder="搜索爆帖、选题、灵感或草稿" />
           <div className="topbar-spacer" />
           <div className="demo-badge"><Activity size={13} />{loading ? "连接中" : error ? "API 错误" : "PostgreSQL"}</div>
           <Button className="desktop-only" icon={<RefreshCw size={15} />} onClick={runScan}>运行抓取</Button>

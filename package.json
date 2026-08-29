@@ -2,6 +2,23 @@
   "name": "marketing-pipeline-dashboard",
   "private": true,
   "version": "0.1.0",
+  "description": "Local-first, project-aware content intelligence pipeline with auditable Android phone automation.",
+  "keywords": [
+    "content-intelligence",
+    "marketing-automation",
+    "social-media",
+    "local-first",
+    "android-automation",
+    "appium"
+  ],
+  "homepage": "https://github.com/Huo-sui/marketing-pipeline-dashboard#readme",
+  "bugs": {
+    "url": "https://github.com/Huo-sui/marketing-pipeline-dashboard/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Huo-sui/marketing-pipeline-dashboard.git"
+  },
   "type": "module",
   "license": "Apache-2.0",
   "engines": {
@@ -20,10 +37,12 @@
     "phone:doctor:json": "node scripts/phone-doctor.mjs --json",
     "health": "node scripts/healthcheck.mjs",
     "audit:privacy": "node scripts/privacy-audit.mjs",
+    "audit:privacy:history": "node scripts/privacy-audit.mjs --history",
+    "audit:privacy:local": "node scripts/privacy-audit.mjs --local",
     "db:generate": "prisma generate",
     "db:validate": "prisma validate",
     "db:migrate": "prisma migrate deploy",
-    "test:unit": "node --test server/scoring/robustAnomaly.test.ts server/platforms/xiaohongshuPhoneAdapter.test.ts",
+    "test:unit": "node --test server/scoring/robustAnomaly.test.ts server/platforms/xiaohongshuPhoneAdapter.test.ts server/platforms/xiaohongshuPublisher.test.ts server/workflows/viralAnalysisContract.test.ts",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "check": "npm run audit:privacy && npm run lint && npm run test:unit && npm run build && npm audit --audit-level=high",

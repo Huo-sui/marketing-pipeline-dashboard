@@ -7,6 +7,9 @@ export type ReviewAction = "unreviewed" | "engage" | "adapt" | "ignored";
 export type SourceReviewState = "pending" | "approved" | "rejected";
 export type IdeaStatus = "candidate" | "approved" | "rejected";
 export type AssetMatchState = "pending" | "matched" | "needs_generation" | "not_applicable";
+export type InsightKind = "inspiration" | "pain_point" | "feedback";
+export type InsightEvidenceType = "post" | "comment" | "inference";
+export type ContentDraftStatus = "pending_review" | "approved" | "rejected";
 export type ProjectStatus = "active" | "archived";
 export type AccountRole = "discovery" | "publishing" | "engagement";
 export type AccountSessionStatus = "login_required" | "verifying" | "healthy" | "needs_reauth" | "challenged" | "identity_mismatch";
@@ -123,15 +126,41 @@ export interface SourceEvidence {
   capturedAt: string;
 }
 
-export interface PatternCard {
-  hook: string;
-  hookSeconds?: number;
-  structure: string;
-  shotRhythm: string;
-  onScreenText: string;
-  proofPoint: string;
-  cta: string;
-  replaceableElements: string[];
+export interface ViralPostAnalysis {
+  summary: string;
+  viralReasons: Array<{ claim: string; evidence: string[]; confidence: "high" | "medium" | "low" }>;
+  production: {
+    mediaType: "video" | "image_text" | "text";
+    hook: string;
+    structure: string[];
+    videoMethod: string[];
+    writingMethod: string[];
+    imageTypes: string[];
+  };
+  replicationDecision: {
+    verdict: "adapt" | "inspire" | "reject";
+    reason: string;
+    portableElements: string[];
+    mustReplace: string[];
+  };
+  topicCandidates: Array<{
+    title: string;
+    hook: string;
+    format: "视频" | "图文" | "纯文本";
+    copyOutline: string[];
+    assetStrategy: "reuse_project_asset" | "generate_style_similar" | "no_asset";
+    assetIds: string[];
+    imageBrief?: string;
+    videoPlaceholder?: string;
+  }>;
+  insights: Array<{
+    kind: InsightKind;
+    title: string;
+    detail: string;
+    evidenceType: InsightEvidenceType;
+    commentIds: string[];
+  }>;
+  limitations: string[];
 }
 
 export interface SourcePost {
@@ -153,18 +182,20 @@ export interface SourcePost {
   externalId: string;
   capturedAt: string;
   evidence: SourceEvidence;
-  patternCard?: PatternCard;
+  patternCard?: ViralPostAnalysis;
+  patternCardVersion?: number;
 }
 
 export interface AssetRecord {
   id: string;
   projectId: string;
   name: string;
-  type: "截图" | "录屏" | "Logo" | "音频" | "其他";
+  type: "截图" | "生成图" | "录屏" | "Logo" | "音频" | "其他";
   image: string;
   tags: string[];
   usage: string;
   status: "可用" | "待标注";
+  artifactId?: string;
 }
 
 export interface IdeaRecord {
@@ -179,6 +210,9 @@ export interface IdeaRecord {
   videoPrompt?: string;
   assetMatch?: AssetMatchState;
   assetId?: string;
+  assetIds?: string[];
+  imageBrief?: string;
+  videoBrief?: Record<string, unknown>;
   copy?: string;
   generationBatchId?: string;
   updatedAt?: string;
@@ -199,12 +233,58 @@ export interface GenerationJob {
   type: "视频" | "图文";
   provider: string;
   progress: number;
-  status: "running" | "review" | "ready" | "queued";
+  status: "running" | "review" | "ready" | "queued" | "failed";
   updated: string;
   ideaId?: string;
   artifacts?: ArtifactRecord[];
   prompt?: string;
   copy?: string;
+}
+
+export interface InsightRecord {
+  id: string;
+  projectId: string;
+  sourcePostId?: string;
+  ideaId?: string;
+  kind: InsightKind;
+  title: string;
+  detail: string;
+  evidenceType: InsightEvidenceType;
+  commentIds: string[];
+  status: SourceReviewState;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ContentDraftSourceSnapshot {
+  idea: { id: string; title: string; version: number };
+  sourcePosts: Array<{ id: string; platform: Platform; externalId: string; canonicalUrl: string; author: string; title: string; publishedAt?: string | null; mediaType?: string | null }>;
+  analyses: Array<{ sourcePostId: string; patternCardId: string; patternCardVersionId: string; version: number }>;
+}
+
+export interface ContentDraftRecord {
+  id: string;
+  projectId: string;
+  ideaId: string;
+  status: ContentDraftStatus;
+  currentVersion: number;
+  createdAt: string;
+  updatedAt: string;
+  revision: {
+    id: string;
+    version: number;
+    title: string;
+    copy: string;
+    format: string;
+    assetStrategy: string;
+    assetIds: string[];
+    imageBrief?: string;
+    videoBrief?: Record<string, unknown>;
+    sourceSnapshot: ContentDraftSourceSnapshot;
+    createdBy?: string;
+    createdAt: string;
+  };
 }
 
 export interface AccountRecord {

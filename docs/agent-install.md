@@ -1,5 +1,7 @@
 # Agent installation contract
 
+[简体中文](agent-install.zh-CN.md) | English
+
 This is the source of truth for installing the complete Marketing Pipeline:
 Core mode (Dashboard, Control API, database, and shared pipeline) plus Android
 Phone mode. A Dashboard-only start is not considered a completed installation.
@@ -10,10 +12,12 @@ Installation is complete only when all of the following are true:
 
 1. `npm run setup` succeeds.
 2. `npm run phone:doctor:json` reports `ready: true`.
-3. `npm start` keeps the Dashboard, Control API, PostgreSQL, and Appium running.
+3. `npm start` keeps the Dashboard/Control API and Appium running, while
+   reusing a reachable PostgreSQL instance or starting the bundled container.
 4. `npm run health` returns HTTP 200.
-5. The user can open `http://127.0.0.1:3210`, add the detected phone-backed
-   account, log in on the physical phone, and confirm the detected identity.
+5. The user can open the configured local Dashboard URL. For each platform the
+   user intends to run, its app is installed, the user logs in on the physical
+   phone, and the detected real account identity is confirmed.
 
 Do not replace a missing phone, platform link, publication time, API response,
 or account identity with fixtures or invented values.
@@ -25,6 +29,7 @@ or account identity with fixtures or invented values.
 - Docker Desktop or Docker Engine with Compose v2, unless the user deliberately
   supplies an already-reachable compatible PostgreSQL `DATABASE_URL`
 - A physical Android phone and a USB data cable
+- A Zhipu AutoGLM-Phone API key, stored by the user directly in local `.env`
 
 `npm run setup` installs project dependencies, downloads the official Android
 Platform Tools and Eclipse Temurin JDK 17 into `data/toolchain`, starts
@@ -66,7 +71,20 @@ global or npm-cache installation.
    user to paste the key into chat and never print it back.
 9. Rerun `npm run phone:doctor:json`. Do not declare success before `ready` is
    true.
-10. Run `npm start`, wait for the service, then run `npm run health`.
+10. Run `npm start`, keep it running, then run `npm run health` from a second
+    terminal. If `MARKETING_PIPELINE_PORT` is set, use the matching Dashboard
+    URL rather than assuming port 3210.
+
+## Port recovery
+
+- If the Dashboard/Control API is no longer listening, rerun `npm start`; on
+  Windows, `npm run start:windows` starts the complete service in a hidden
+  process.
+- The Dashboard port is `MARKETING_PIPELINE_PORT` from `.env`, defaulting to
+  3210. If it is occupied, choose a free local port and rerun `npm run health`.
+- Appium currently uses local port 4723. The bundled PostgreSQL mapping uses
+  local port 5432. Do not work around a conflict by binding any service to
+  `0.0.0.0`.
 
 ## OS-specific notes
 
@@ -97,12 +115,19 @@ hardware-device documentation.
 - `.env`, `data/`, phone UI dumps, browser profiles, logs, device serials, and
   screenshots are local-only.
 - Keep ports 3210, 4723, and 5432 bound to `127.0.0.1`.
+- Optional Xiaohongshu Comment Bot and Publisher APIs must also use loopback
+  addresses. The publisher must follow the
+  [Xiaohongshu Publisher API contract](xiaohongshu-publisher-contract.md).
 - Do not register automatic startup unless the user explicitly asks for it.
 - Do not expose the service through a tunnel, LAN binding, reverse proxy, or
   cloud host as part of installation.
+- Do not attach Phone Doctor output, screenshots, logs, UI dumps, or database
+  exports to a public issue without reviewing and redacting them first.
 
 ## Official references
 
+- Codex project instructions with `AGENTS.md`:
+  https://developers.openai.com/codex/guides/agents-md/
 - Android hardware device and USB debugging:
   https://developer.android.com/studio/run/device
 - Android developer options:

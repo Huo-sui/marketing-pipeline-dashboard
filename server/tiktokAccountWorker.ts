@@ -819,7 +819,7 @@ export async function discoverTikTok(accountId: string, terms: string[], deviceI
         const link = await copyPostLinkWithAgent(device, term);
         if (!seen.has(link.externalId)) {
           seen.add(link.externalId);
-          posts.push({ ...link, ...metadata, mediaType: "视频", term, rawPayload: { source: "autoglm-share-link", term, candidate, rawClipboard: link.rawClipboard, agentStep: link.step } });
+          posts.push({ externalId: link.externalId, canonicalUrl: link.canonicalUrl, ...metadata, mediaType: "视频", term, rawPayload: { source: "autoglm-share-link", term, candidate, shareLinkResolved: true } });
           log("info", "candidate_captured", `候选 ${candidate} 已取得真实分享链接`, term, page, { externalId: link.externalId });
         } else {
           log("warn", "duplicate_candidate", `候选 ${candidate} 分享链接重复，继续下一个候选`, term, page);

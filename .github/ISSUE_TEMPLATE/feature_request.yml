@@ -1,0 +1,73 @@
+name: Feature request / 功能建议
+description: Propose a focused, modular improvement and its user outcome. / 提出职责单一、模块化且有明确用户结果的改进。
+title: "[Feature]: "
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem before the implementation. Planned roadmap items are welcome, but this form does not imply that a capability is already supported.
+
+        请先描述用户问题，再描述实现。可以讨论路线图能力，但提交本表不代表该能力当前已支持。
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem / 用户问题
+      description: Who is blocked, in which workflow, and what is the cost? / 谁在什么流程中受阻，代价是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome / 期望结果
+      description: Describe observable behavior, not a specific library. / 描述可观察行为，而不是先指定某个库。
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Pipeline stage / Pipeline 阶段
+      options:
+        - Topic Radar / 话题雷达
+        - Topic Inbox and review / 选题箱与审核
+        - Analysis, pain points, or feedback / 分析、痛点或反馈
+        - Idea or draft generation / 选题或草稿生成
+        - Asset or media handling / 资产或媒体处理
+        - Publishing / 发布
+        - Installation or operations / 安装或运维
+        - Cross-cutting architecture / 跨模块架构
+    validations:
+      required: true
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Expected boundary / 预期边界
+      options:
+        - Shared pipeline capability / 平台化共享能力
+        - Platform-specific adapter or playbook / 平台专属 Adapter 或 Playbook
+        - Shared Android driver / 通用 Android Driver
+        - Documentation or project operations / 文档或项目运维
+        - Unsure / 不确定
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria / 验收标准
+      description: Include human-review points, source traceability, failure behavior, and real-device evidence when relevant. / 适用时包含人工审核点、来源追溯、失败行为和真实设备证据。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered / 考虑过的替代方案
+    validations:
+      required: false
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation / 隐私确认
+      options:
+        - label: This request contains no secrets, private account/device data, or copyrighted source media. / 本建议不包含 Secret、私密账号/设备数据或受版权保护的来源媒体。
+          required: true

@@ -1,5 +1,6 @@
 import { AndroidPhoneDriver, androidUiNodes, type AndroidUiNode } from "../mobile/androidPhoneDriver.js";
 import { parseXiaohongshuPublicationValues } from "./xiaohongshuMetadata.js";
+import { isAllowedXiaohongshuUrl, xiaohongshuExternalId, xiaohongshuMediaTypeHint } from "./xiaohongshuUrl.js";
 
 const XHS_PACKAGE = "com.xingin.xhs";
 
@@ -59,29 +60,23 @@ function parseComments(xml: string) {
   return undefined;
 }
 
-function xhsId(url: string) {
-  return url.match(/\/(?:explore|discovery\/item)\/([a-f0-9]{16,32})/i)?.[1] ?? url.match(/[?&]noteId=([a-f0-9]{16,32})/i)?.[1] ?? "";
-}
-
 async function resolveXhsUrl(raw: string) {
   const shared = raw.match(/https?:\/\/[^\s]+/i)?.[0]?.replace(/[),，。]+$/, "") ?? "";
-  if (!shared || !/(?:xiaohongshu\.com|xhslink\.(?:cn|com)|rednote\.com)/i.test(shared)) return null;
+  if (!shared || !isAllowedXiaohongshuUrl(shared)) return null;
   let canonicalUrl = shared;
-  let externalId = xhsId(shared);
+  let externalId = xiaohongshuExternalId(shared);
   if (!externalId) {
     try {
       const response = await fetch(shared, { redirect: "follow", signal: AbortSignal.timeout(10_000), headers: { "User-Agent": "Mozilla/5.0" } });
       canonicalUrl = response.url || shared;
-      externalId = xhsId(canonicalUrl);
+      if (!isAllowedXiaohongshuUrl(canonicalUrl)) return null;
+      externalId = xiaohongshuExternalId(canonicalUrl);
     } catch { /* the real short URL remains usable below */ }
   }
-  if (!externalId) {
-    try {
-      const parsed = new URL(shared);
-      if (/^xhslink\.(?:cn|com)$/i.test(parsed.hostname)) externalId = `xhslink:${parsed.pathname.split("/").filter(Boolean).join(":")}`;
-    } catch { /* reject below */ }
-  }
-  return externalId ? { externalId, canonicalUrl } : null;
+  // A short-link path is not a real note ID. Keep resolving or reject the
+  // candidate; never synthesize an external ID from a tracking URL.
+  const mediaTypeHint = xiaohongshuMediaTypeHint(shared, canonicalUrl);
+  return externalId ? { externalId, canonicalUrl: `https://www.xiaohongshu.com/explore/${externalId}`, mediaTypeHint } : null;
 }
 
 async function dismissKnownOverlays(driver: AndroidPhoneDriver, initial?: string) {
@@ -227,8 +222,8 @@ export async function discoverXiaohongshu(_accountId: string, terms: string[], d
           const publication = await findPublishedAt(driver, detail);
           if (!publication) throw new Error("未采集到发布时间");
           const link = await copyOpenedNoteLink(driver);
-          const mediaType = /[?&]type=video(?:&|$)/i.test(link.canonicalUrl) ? "视频" as const : "图文" as const;
-          const post: XiaohongshuDiscoveryPost = { ...link, author: cardData.author, title: cardData.title, likes: cardData.likes, comments, publishedAt: publication.publishedAt, mediaType, term, rawPayload: { source: "xiaohongshu-android-share-link", term, resultAccessibilityLabel: cardData.resultAccessibilityLabel, publicationEvidence: publication.evidence, publicationScrollAttempts: publication.scrollAttempts, rawClipboard: link.rawClipboard } };
+          const mediaType = link.mediaTypeHint ?? "图文" as const;
+          const post: XiaohongshuDiscoveryPost = { externalId: link.externalId, canonicalUrl: link.canonicalUrl, author: cardData.author, title: cardData.title, likes: cardData.likes, comments, publishedAt: publication.publishedAt, mediaType, term, rawPayload: { source: "xiaohongshu-android-share-link", term, resultAccessibilityLabel: cardData.resultAccessibilityLabel, publicationEvidence: publication.evidence, publicationScrollAttempts: publication.scrollAttempts, shareLinkResolved: true } };
           const missingChecklist = [!post.externalId && "真实 externalId", !post.canonicalUrl && "真实链接", !post.author && "作者", !post.title && "标题", !Number.isFinite(post.likes) && "点赞数", !Number.isFinite(post.comments) && "评论数", !post.publishedAt && "发布时间", !post.mediaType && "媒体类型", !post.term && "命中词"].filter((item): item is string => Boolean(item));
           if (missingChecklist.length) throw new Error(`字段清单未完成：${missingChecklist.join("、")}`);
           log("info", "candidate_read", `读取候选：${cardData.title}，点赞 ${cardData.likes}，评论 ${comments}，发布于 ${publication.publishedAt}`, term, { likes: cardData.likes, comments, publishedAt: publication.publishedAt, publicationEvidence: publication.evidence, checklistComplete: true });
