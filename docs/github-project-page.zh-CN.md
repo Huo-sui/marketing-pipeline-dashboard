@@ -9,11 +9,11 @@ README 顶部链接 `README.zh-CN.md` 服务中文读者。
 
 **推荐 Description（GitHub 主描述使用英文）**
 
-> Local-first content intelligence pipeline for project-specific social discovery, human review, and auditable Android automation.
+> Solo Company Marketing Pipeline: local-first Android discovery for Xiaohongshu and TikTok, with a modular generation-to-publishing roadmap.
 
 **中文对照**
 
-> 本地优先、按项目组织的内容情报 Pipeline：发现社交平台内容，保留人工终审，并提供可审计的 Android 自动化。
+> 一人公司营销管线：目前通过 Android 真机发现小红书与 TikTok 内容，按模块扩展到生成、发布与智能回复闭环。
 
 **Website**
 
@@ -35,6 +35,8 @@ tiktok
 typescript
 react
 postgresql
+solopreneur
+creator-tools
 ```
 
 真实能力完成并验证前，不要添加 `auto-publishing`、`comment-bot` 等会造成误解的 Topic。

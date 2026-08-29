@@ -1,30 +1,73 @@
-# Marketing Pipeline
+# Solo Company Marketing Pipeline
+
+> 一人公司营销管线
 
 [简体中文](README.zh-CN.md) | English
 
 [![CI](https://github.com/Huo-sui/marketing-pipeline-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/Huo-sui/marketing-pipeline-dashboard/actions/workflows/ci.yml)
 
-Marketing Pipeline is a local-first, project-aware content intelligence
-workflow. It collects real social posts through modular platform adapters,
-normalizes the evidence into one auditable pipeline, and gives a human the
-final say before a topic, creative, or release moves forward.
+Solo Company Marketing Pipeline is a local-first marketing workbench for
+solopreneurs, independent developers, and small teams. Today it uses one
+USB-connected Android phone to collect real Xiaohongshu and TikTok posts by
+project and topic. It sends them into one source inbox (shown as **Viral Post
+Analysis** in the Dashboard) while preserving the original URL, author,
+metrics, publication time, and run evidence.
 
-The product direction is:
+The goal is not just content intelligence. It is a complete, human-reviewed
+marketing loop that can eventually run every day:
 
-`Topic Radar -> Topic Inbox -> analysis and feedback -> approved ideas -> reviewable drafts -> publishing`
+`daily run -> viral discovery -> analysis -> Idea Inbox -> copy and media -> reviewable drafts -> selected/multi-account publishing -> smart replies`
 
-The current alpha covers the first, evidence-heavy part of that path. It is
-useful for teams that want to track project-specific topics, review strong
-posts without losing their source evidence, and build a modular content
-workflow instead of a one-off scraper.
+## Platform support and product plan
+
+### Supported today
+
+- **Xiaohongshu:** a built-in Android Phone Adapter handles real search,
+  candidate capture, share-link resolution, and evidence persistence.
+- **TikTok:** a built-in Android Phone Adapter handles real search and evidence
+  capture. Its current share-link path uses Zhipu AutoGLM-Phone as a fallback
+  for the capability that declares that dependency.
+
+Both paths require the target app to be installed, the user to be signed in,
+the real account identity to be confirmed in the Dashboard, and Phone Doctor to
+report Ready. “Supported” means the repository ships the platform adapter and
+normalized ingestion path; it does not mean every device, region, app version,
+or account state has been validated.
+
+### Planned platforms
+
+YouTube, Instagram, Reddit, Douyin, and other major content platforms are in
+scope. Instagram, Reddit, Douyin, and X already have configurable HTTP
+Discovery contract entry points, but the repository does not bundle their
+external services, so they are not out-of-the-box platform support. YouTube is
+still at the planning stage.
+
+### Planned complete loop
+
+1. Continuously collect strong posts from project directions and tracked topics.
+2. Combine source posts, comments, and project-owned assets to break down viral
+   patterns, extract pain points, and produce editable, human-approved ideas.
+3. Connect original copy, image, and video generation while preserving the
+   source idea, post, and asset provenance on every draft.
+4. After explicit approval, hand a draft to a selected account or a
+   multi-account publishing module; each platform publisher remains replaceable.
+5. Generate evidence-backed smart replies from collected posts and comments,
+   with human review and platform risk controls.
+
+The product is intended to let one person configure projects, topics, accounts,
+and a daily run time while the system handles collection, analysis, and
+preparation. The current version stores schedules such as “daily at 10:00,” but
+the repository does not yet ship an always-on scheduler; saved rules are still
+run manually. Automated daily execution, retries, and notifications are next-
+stage work.
 
 > **Alpha status:** real Android Phone mode is part of the product, not an
-> optional demo. TikTok and Xiaohongshu discovery are under active development.
-> Repository-level viral-analysis and review-draft replication Skills plus their versioned record layers are
-> included, but the bundled app does not autonomously run a model. Comment Bot,
-> copy/image generation, video generation, and phone-publishing services are not bundled. The application
-> records unavailable capabilities as unavailable; it does not manufacture a
-> successful result with fixtures or fallback data.
+> optional demo. The repository includes viral analysis, idea/inspiration
+> management, review-draft replication, Comment Bot contracts, and Publisher
+> contracts, but the bundled Dashboard does not autonomously run a model.
+> Comment Bot, real image/video generation providers, and phone-publishing
+> services are not bundled. Unavailable capabilities remain explicitly
+> unavailable; the app never manufactures success with fixtures or fallback data.
 
 ## What works today
 
@@ -32,7 +75,7 @@ workflow instead of a one-off scraper.
 | --- | --- |
 | Project workspace | Projects, topic watches, account bindings, assets, ideas, draft records, and run history are persisted in PostgreSQL through the local Control API. |
 | Topic Radar | Runs saved P0 watches with persisted thresholds. It does not depend on an agent manually operating the phone at runtime. |
-| Android discovery | TikTok and Xiaohongshu have phone adapters built on ADB, Appium, and UiAutomator2. TikTok currently uses AutoGLM for a share-link fallback; Xiaohongshu uses a deterministic platform playbook. |
+| Android discovery | TikTok and Xiaohongshu have phone adapters built on ADB, Appium, and UiAutomator2. TikTok currently uses AutoGLM-Phone for a share-link fallback; Xiaohongshu uses a deterministic platform playbook. |
 | Evidence pipeline | Stores real external IDs and canonical URLs, author/title/metrics, publication evidence required by the adapter, media type, matched term, raw evidence, metric snapshots, matches, and run events. |
 | Qualification | Applies the saved hard thresholds and keeps relative anomaly cohorts within the same platform, topic watch, tracked term, and publication-age bucket. |
 | Viral analysis | The repository-level `$viral-topic-analysis` Skill reads a privacy-minimized project/evidence DTO and saves a strictly validated, versioned breakdown. It never auto-approves ideas or invents missing media/comment evidence. |
@@ -41,22 +84,22 @@ workflow instead of a one-off scraper.
 | Comment collection | The Control API and Adapter contract can call a separately operated Xiaohongshu Comment Bot and store normalized evidence. No Bot is bundled, so the capability remains false until `XIAOHONGSHU_COMMENT_BOT_BASE_URL` is configured. |
 | Publishing | A modular, idempotent Publisher call and strict real-receipt validation are implemented. After `XIAOHONGSHU_PUBLISHER_BASE_URL` points to a local service, explicit approval can hand the locked draft to that phone publisher. No service is bundled; an unconfigured run returns `PUBLISHER_NOT_CONFIGURED`. |
 
-HTTP discovery adapters can also be configured for Douyin, Reddit, X, and
-Instagram. They require a separate service that implements the normalized
-`POST /discover` contract; this repository does not bundle those external
-services or credentials.
-
 ## Product roadmap
 
 The following items remain roadmap work rather than finished capabilities:
 
-- Add authenticated multi-user identity to audit actors; the current app is a
-  loopback-only, single-workspace local tool.
+- Add an always-on scheduler, retries, and notifications so saved rules can run
+  automatically every day.
 - Add real image-generation providers that persist artifacts and provenance,
   plus a replaceable video-generation module.
-- Implement and verify separately operated platform-owned Comment Bot and Phone
-  Publisher services. This repository provides their narrow contracts and only
-  hands a publication draft to a loopback service after explicit approval.
+- Implement and verify separately operated platform-owned Comment Bot, smart-
+  reply, and Phone Publisher services, including selected-account and multi-
+  account orchestration. The repository only hands a publication draft to a
+  loopback service after explicit approval.
+- Ship and validate real adapters for YouTube, Instagram, Reddit, Douyin, and
+  other planned platforms.
+- Add authenticated multi-user identity to audit actors; the current app is a
+  loopback-only, single-workspace local tool.
 
 Each stage is intended to be replaceable behind a narrow contract, so a
 provider or platform failure remains local to that module.
@@ -64,9 +107,32 @@ provider or platform failure remains local to that module.
 See the bilingual [Xiaohongshu Publisher API contract](docs/xiaohongshu-publisher-contract.md)
 for the request, receipt, idempotency, and safety boundary.
 
+## Runtime and device support
+
+Complete Phone mode uses one physical phone connected to the computer with a
+USB data cable. The phone can stay connected continuously; when a run starts it
+must be ADB-authorized, operable, and signed into a valid account. The phone
+stack is hybrid: ADB, Appium, UiAutomator2, and platform playbooks perform
+deterministic actions, while Zhipu AutoGLM-Phone provides a fallback for
+explicitly declared visual/action capabilities (currently mainly TikTok Phone
+Discovery). Not every step is vision-model driven.
+
+Phone automation reduces reliance on unofficial scraping or publishing APIs
+and reuses a real app session, but it **does not make account bans impossible**.
+Platforms can still present CAPTCHAs, rate limits, risk controls, UI changes, or
+account restrictions. Use only accounts you are authorized to operate, keep
+run frequency conservative, follow platform terms, and leave login, consent,
+CAPTCHA, and risk-control decisions to a person.
+
+Android is the only supported device platform today because the implementation
+and real-device validation environment are Android-based. iOS/iPhone is on the
+roadmap. Contributors who can provide an iPhone, a macOS/Xcode environment, or
+ongoing real-device testing are welcome to help develop and validate an iOS
+adapter through an issue or pull request.
+
 ## Complete installation
 
-Marketing Pipeline ships as one local installation with:
+Solo Company Marketing Pipeline ships as one local installation with:
 
 - **Core mode:** Dashboard, local Control API, PostgreSQL, and the shared
   pipeline.

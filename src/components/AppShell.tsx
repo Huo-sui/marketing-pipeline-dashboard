@@ -49,8 +49,8 @@ export function AppShell() {
       {menuOpen && <button className="sidebar-overlay" aria-label="关闭导航" onClick={() => setMenuOpen(false)} />}
       <aside className={`app-sidebar ${menuOpen ? "open" : ""}`}>
         <div className="brand">
-          <div className="brand-mark">MP</div>
-          <div><div className="brand-title">Marketing Pipeline</div><div className="brand-subtitle">Control Plane</div></div>
+          <div className="brand-mark">1P</div>
+          <div><div className="brand-title">一人公司营销管线</div><div className="brand-subtitle">Solo Company Pipeline</div></div>
           {menuOpen && <Button className="mobile-menu" type="text" icon={<X size={18} />} onClick={() => setMenuOpen(false)} />}
         </div>
         <nav>

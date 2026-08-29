@@ -1,10 +1,11 @@
-# Contributing to Marketing Pipeline
+# Contributing to Solo Company Marketing Pipeline
 
 [简体中文](CONTRIBUTING.zh-CN.md) | English
 
-Thanks for helping improve Marketing Pipeline. This is an alpha project that
-can operate a real Android phone and authenticated social accounts, so honest
-capability reporting and privacy-safe evidence matter as much as code quality.
+Thanks for helping improve Solo Company Marketing Pipeline. This is an alpha
+project that can operate a real Android phone and authenticated social accounts,
+so honest capability reporting and privacy-safe evidence matter as much as code
+quality.
 
 ## Before opening an issue
 

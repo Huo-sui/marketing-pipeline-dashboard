@@ -2,8 +2,9 @@
 
 简体中文 | [English](SECURITY.md)
 
-Marketing Pipeline 是一个可以控制实体 Android 手机并与已登录社交平台 Session 交互的
-本地优先应用。宿主机、手机、`.env`、PostgreSQL 数据和 `data/` 目录都应视为敏感数据。
+一人公司营销管线（Solo Company Marketing Pipeline）是一个可以控制实体 Android 手机并与
+已登录社交平台 Session 交互的本地优先应用。宿主机、手机、`.env`、PostgreSQL 数据和
+`data/` 目录都应视为敏感数据。
 
 ## 支持版本
 

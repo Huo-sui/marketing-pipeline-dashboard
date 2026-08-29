@@ -2,9 +2,10 @@
 
 [简体中文](SECURITY.zh-CN.md) | English
 
-Marketing Pipeline is a local-first application that can control a physical
-Android device and interact with authenticated social-platform sessions. Treat
-the host, phone, `.env`, PostgreSQL data, and `data/` directory as sensitive.
+Solo Company Marketing Pipeline is a local-first application that can control a
+physical Android device and interact with authenticated social-platform
+sessions. Treat the host, phone, `.env`, PostgreSQL data, and `data/` directory
+as sensitive.
 
 ## Supported versions
 

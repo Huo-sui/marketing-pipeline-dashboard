@@ -1,25 +1,54 @@
-# Marketing Pipeline
+# 一人公司营销管线
+
+> Solo Company Marketing Pipeline
 
 简体中文 | [English](README.md)
 
 [![CI](https://github.com/Huo-sui/marketing-pipeline-dashboard/actions/workflows/ci.yml/badge.svg)](https://github.com/Huo-sui/marketing-pipeline-dashboard/actions/workflows/ci.yml)
 
-Marketing Pipeline 是一个本地优先、按项目组织的内容情报工作流。它通过可替换的平台
-Adapter 采集真实社交平台帖子，把来源证据标准化到同一条可审计管线中，并确保选题、创意
-或发布进入下一阶段之前都经过人工确认。
+一人公司营销管线是一套为一人公司、独立开发者和小团队设计的本地优先营销工作台。当前
+版本通过一台 USB 连接的 Android 手机，按项目和话题抓取小红书、TikTok 的真实帖子，并把
+它们归集到统一来源收件池（Dashboard 中的“爆帖分析”），同时保留原帖链接、作者、指标、
+发布时间与运行证据。
 
-产品目标链路是：
+它的目标不只是内容情报，而是一条可以每天自动运行、由一个人掌控终审的完整营销闭环：
 
-`话题雷达 -> 选题箱 -> 爆帖分析与反馈 -> 已批准选题 -> 待审草稿 -> 发布`
+`每日运行 -> 爆帖收集 -> 爆帖分析 -> 选题箱 -> 图片/视频与文案 -> 待审草稿 -> 指定或多账号发布 -> 智能回复`
 
-当前 Alpha 版本完成的是这条链路前半段、以真实证据为核心的能力。它适合希望按项目追踪
-话题、在保留原帖溯源的前提下筛选高表现内容，并逐步搭建模块化内容工作流的团队，而不是
-一个只跑一次的抓取脚本。
+## 平台支持与产品规划
 
-> **Alpha 状态：**真实 Android Phone 模式是产品组成部分，不是可选 Demo。TikTok 与
-> 小红书 Discovery 仍在持续开发。仓库已经包含爆帖分析与待审草稿复刻 Skill 及其版本化记录层，但 Dashboard
-> 不会自行调用模型。评论 Bot、文案/图片生成、视频生成和手机发布服务不随仓库内置。能力不可用时系统会明确报不可用，不会用 Fixture 或回退数据
-> 伪造成功。
+### 当前支持
+
+- **小红书：**内置 Android Phone Adapter，负责真实搜索、候选采集、分享链接解析与证据保存。
+- **TikTok：**内置 Android Phone Adapter，负责真实搜索与证据采集；当前复制分享链接路径会在
+  声明的能力上使用智谱 AutoGLM-Phone 回退。
+
+两条平台链路都要求目标 App 已安装、用户本人已登录、账号身份已在 Dashboard 确认，并且
+Phone Doctor 返回 Ready。这里的“支持”指仓库已提供平台 Adapter 与统一入库链路，不代表每种
+机型、地区、App 版本和账号状态都已完成真机验证。
+
+### 计划支持
+
+YouTube、Instagram、Reddit、抖音及其他主流内容平台都在扩展范围内。其中 Instagram、
+Reddit、抖音和 X 已有可配置的 HTTP Discovery 合同入口，但仓库尚未内置对应外部服务，因此
+不能视为开箱即用的平台支持；YouTube 仍处于规划阶段。
+
+### 完整功能闭环
+
+1. 根据项目方向和追踪话题，持续收集高表现帖子并进入爆帖分析池。
+2. 结合来源帖子、评论与已有项目资产，拆解爆款结构、提炼痛点，并产出可编辑、可人工终审的选题。
+3. 贯通原创文案、图片与视频生成；每份草稿保留来源选题、原帖和资产溯源。
+4. 人工确认后，一键交给指定账号或多账号发布模块；各平台 Publisher 保持可替换、互不耦合。
+5. 基于抓取的帖子与评论生成有证据来源的智能回复，并保留人工审核和平台风控边界。
+
+产品目标是让一个人配置项目、话题、账号与每日运行时间后，系统持续完成收集、分析和准备
+工作，把关键判断留给人。当前版本可以保存“每日 10:00”一类运行计划，但仓库尚未内置常驻
+调度器；现在仍需手动运行已保存规则。自动按日运行、失败重试和通知属于下一阶段交付。
+
+> **Alpha 状态：**真实 Android Phone 模式是产品组成部分，不是可选 Demo。仓库已经包含
+> 爆帖分析、选题/灵感管理、待审草稿复刻、评论 Bot 合同与 Publisher 合同，但 Dashboard 不会
+> 自行调用模型。评论 Bot、真实图片/视频生成 Provider 和手机发布服务不随仓库内置。能力不可用
+> 时系统会明确报不可用，不会用 Fixture 或回退数据伪造成功。
 
 ## 目前能做什么
 
@@ -27,7 +56,7 @@ Adapter 采集真实社交平台帖子，把来源证据标准化到同一条可
 | --- | --- |
 | 项目工作区 | 项目、话题追踪规则、账号绑定、资产、Idea、草稿记录和运行历史通过本地 Control API 保存到 PostgreSQL。 |
 | 话题雷达 | 使用已保存的阈值运行 P0 规则；运行时不依赖 Agent 临时手工操作手机。 |
-| Android Discovery | TikTok 与小红书拥有基于 ADB、Appium 和 UiAutomator2 的 Phone Adapter。TikTok 当前在复制分享链接时使用 AutoGLM 回退；小红书使用确定性平台 Playbook。 |
+| Android Discovery | TikTok 与小红书拥有基于 ADB、Appium 和 UiAutomator2 的 Phone Adapter。TikTok 当前在复制分享链接时使用 AutoGLM-Phone 回退；小红书使用确定性平台 Playbook。 |
 | 证据管线 | 保存真实 external ID 与 canonical URL、作者/标题/指标、Adapter 要求的发布时间证据、媒体类型、命中词、原始证据、指标快照、匹配关系与运行事件。 |
 | 筛选 | 使用已保存的硬阈值；相对异常基线严格限制在同平台、同 TopicWatch、同追踪词和同发布年龄桶内。 |
 | 爆帖分析 | 仓库级 `$viral-topic-analysis` Skill 读取经过隐私最小化的项目/证据 DTO，并保存严格校验、可版本追溯的拆解；不会自动通过选题，也不会补造缺失的媒体或评论证据。 |
@@ -36,26 +65,40 @@ Adapter 采集真实社交平台帖子，把来源证据标准化到同一条可
 | 评论采集 | Control API 与 Adapter 合同可调用独立部署的小红书评论 Bot 并保存标准化证据；仓库不内置 Bot，只有配置 `XIAOHONGSHU_COMMENT_BOT_BASE_URL` 后能力才会变为可用。 |
 | 发布 | 已实现模块化、幂等的 Publisher 调用与真实回执校验；配置本机 `XIAOHONGSHU_PUBLISHER_BASE_URL` 后，人工确认可把锁定草稿交给手机发布服务。仓库不内置该服务，未配置时明确返回 `PUBLISHER_NOT_CONFIGURED`。 |
 
-抖音、Reddit、X 与 Instagram 也可以配置 HTTP Discovery Adapter，但必须另行提供实现标准化
-`POST /discover` 合同的服务；本仓库不内置这些外部服务或账号凭据。
-
 ## 产品路线图
 
 下面仍属于路线图，不代表当前已经完成：
 
-- 为审计 Actor 增加经过认证的多用户身份；当前产品仍是只绑定回环地址的单 Workspace 本地工具。
+- 增加常驻调度、失败重试与通知，让已保存规则可以每天自动运行。
 - 接入真正的图片生成 Provider，并保存 Artifact 与来源，再增加可替换的视频生成模块。
-- 实现并验证仓库外的平台专属评论 Bot 与 Phone Publisher 服务；本仓库已经提供窄合同，只有显式批准后
-  才会把 PublicationDraft 交给配置在回环地址上的服务。
+- 实现并验证仓库外的平台专属评论 Bot、智能回复与 Phone Publisher 服务，并支持指定账号和
+  多账号编排；只有显式批准后才会把 PublicationDraft 交给配置在回环地址上的服务。
+- 为 YouTube、Instagram、Reddit、抖音等平台交付并真机/真实账号验证对应 Adapter。
+- 为审计 Actor 增加经过认证的多用户身份；当前产品仍是只绑定回环地址的单 Workspace 本地工具。
 
 每个阶段都应通过窄合同独立替换，让 Provider 或平台故障尽量只影响自身模块。
 
 手机发布服务的中英文请求、回执、幂等与安全边界见
 [小红书 Publisher API 合同](docs/xiaohongshu-publisher-contract.zh-CN.md)。
 
+## 运行方式与设备支持
+
+完整 Phone 模式使用一台通过 USB 数据线连接电脑的实体手机。手机可以长期保持连接；运行时
+必须处于 ADB 已授权、App 可操作且账号有效的状态。底层是混合式手机自动化：ADB、Appium、
+UiAutomator2 和平台 Playbook 负责确定性操作，智谱 AutoGLM-Phone 为明确声明的视觉/动作能力
+提供回退（当前主要用于 TikTok Phone Discovery），并不是所有步骤都由视觉模型执行。
+
+手机自动化减少了对非官方抓取或发布 API 的依赖，并复用真实 App 登录态，但**不等于零封号
+风险**。平台仍可能触发验证码、限流、风控、功能变化或账号限制。请使用你有权操作的账号，
+控制运行频率，遵守平台条款，并保留登录、验证码、授权和风险处置的人工作业。
+
+当前只支持 Android，因为现有实现和真机验证环境都基于 Android。iOS/iPhone 在路线图内；如果
+你能提供 iPhone、macOS/Xcode 环境或持续的真机测试反馈，欢迎通过 Issue 或 Pull Request 一起
+推进 iOS Adapter。
+
 ## 完整安装
 
-Marketing Pipeline 以一个本地安装包同时交付：
+一人公司营销管线以一个本地安装包同时交付：
 
 - **Core 模式：**Dashboard、本地 Control API、PostgreSQL 与共享 Pipeline。
 - **Phone 模式：**通过 ADB、Appium 与 UiAutomator2 控制一台真实、已授权的 Android 手机。

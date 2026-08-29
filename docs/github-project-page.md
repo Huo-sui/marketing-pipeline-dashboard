@@ -10,7 +10,7 @@ of the README for Chinese readers.
 
 **Description**
 
-> Local-first content intelligence pipeline for project-specific social discovery, human review, and auditable Android automation.
+> Solo Company Marketing Pipeline: local-first Android discovery for Xiaohongshu and TikTok, with a modular generation-to-publishing roadmap.
 
 **Website**
 
@@ -33,6 +33,8 @@ tiktok
 typescript
 react
 postgresql
+solopreneur
+creator-tools
 ```
 
 Do not add `auto-publishing`, `comment-bot`, or similar topics until those real

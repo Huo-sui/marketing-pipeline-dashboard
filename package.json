@@ -2,14 +2,16 @@
   "name": "marketing-pipeline-dashboard",
   "private": true,
   "version": "0.1.0",
-  "description": "Local-first, project-aware content intelligence pipeline with auditable Android phone automation.",
+  "description": "Solo Company Marketing Pipeline: local-first Xiaohongshu and TikTok discovery with a modular generation-to-publishing roadmap.",
   "keywords": [
     "content-intelligence",
     "marketing-automation",
     "social-media",
     "local-first",
     "android-automation",
-    "appium"
+    "appium",
+    "solopreneur",
+    "creator-tools"
   ],
   "homepage": "https://github.com/Huo-sui/marketing-pipeline-dashboard#readme",
   "bugs": {

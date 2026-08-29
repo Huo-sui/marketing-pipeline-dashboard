@@ -1,9 +1,10 @@
-# 参与 Marketing Pipeline
+# 参与一人公司营销管线
 
 简体中文 | [English](CONTRIBUTING.md)
 
-感谢参与 Marketing Pipeline。本项目仍处于 Alpha 阶段，并且可以操作真实 Android 手机与
-已登录的社交平台账号，因此“如实说明能力”和“保护隐私证据”与代码质量同样重要。
+感谢参与一人公司营销管线（Solo Company Marketing Pipeline）。本项目仍处于 Alpha 阶段，
+并且可以操作真实 Android 手机与已登录的社交平台账号，因此“如实说明能力”和“保护隐私证据”
+与代码质量同样重要。
 
 ## 提交 Issue 前
 
