@@ -1,6 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 
-let client: PrismaClient | undefined;
+const prismaGlobal = globalThis as typeof globalThis & { __marketingPipelinePrisma?: PrismaClient };
 
 export class DatabaseUnavailableError extends Error {
   readonly code = "DATABASE_UNAVAILABLE";
@@ -13,8 +13,8 @@ export class DatabaseUnavailableError extends Error {
 
 export function getPrismaClient() {
   if (!process.env.DATABASE_URL) throw new DatabaseUnavailableError("未配置 DATABASE_URL，Control API 不会回退到 Demo 数据。");
-  client ??= new PrismaClient({ log: ["error"] });
-  return client;
+  prismaGlobal.__marketingPipelinePrisma ??= new PrismaClient({ log: ["error"] });
+  return prismaGlobal.__marketingPipelinePrisma;
 }
 
 export async function checkDatabase() {
@@ -28,5 +28,6 @@ export async function checkDatabase() {
 }
 
 export async function disconnectDatabase() {
-  if (client) await client.$disconnect();
+  if (prismaGlobal.__marketingPipelinePrisma) await prismaGlobal.__marketingPipelinePrisma.$disconnect();
+  prismaGlobal.__marketingPipelinePrisma = undefined;
 }

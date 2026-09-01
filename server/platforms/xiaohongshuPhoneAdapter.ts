@@ -7,6 +7,7 @@ const XHS_PACKAGE = "com.xingin.xhs";
 export type XiaohongshuDiscoveryPost = {
   externalId: string; canonicalUrl: string; author: string; title: string; likes: number; comments: number;
   publishedAt: string; mediaType: "视频" | "图文"; term: string; rawPayload: Record<string, unknown>;
+  coverEvidence: { bytes: Buffer; mimeType: "image/png"; capturedAt: string; source: "device_screenshot" };
 };
 export type XiaohongshuDiscoveryLog = { timestamp: string; level: "info" | "warn" | "error"; eventType: string; message: string; term?: string; page?: number; payload?: Record<string, unknown> };
 export type XiaohongshuDiscoveryResult = { posts: XiaohongshuDiscoveryPost[]; logs: XiaohongshuDiscoveryLog[] };
@@ -87,6 +88,23 @@ async function dismissKnownOverlays(driver: AndroidPhoneDriver, initial?: string
     xml = await driver.source();
   }
   return xml;
+}
+
+export async function captureXiaohongshuCover(_accountId: string, post: { externalId: string; canonicalUrl: string; author: string; title: string }, deviceId?: string) {
+  if (!isAllowedXiaohongshuUrl(post.canonicalUrl) || xiaohongshuExternalId(post.canonicalUrl) !== post.externalId) throw new Error("小红书封面补采拒绝了不匹配的来源链接");
+  const driver = await AndroidPhoneDriver.connect(XHS_PACKAGE, "小红书", deviceId);
+  await driver.ensureUnlocked();
+  await driver.openUri(`xhsdiscover://item/${post.externalId}`, 2_500);
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const xml = await dismissKnownOverlays(driver);
+    const values = androidUiNodes(xml).flatMap((node) => [node.text, node.desc]).filter(Boolean).join("\n");
+    if (/分享|评论|收藏/.test(values)) {
+      return { bytes: await driver.screenshot(), mimeType: "image/png" as const, capturedAt: new Date().toISOString(), source: "device_screenshot" as const };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 700));
+  }
+  throw new Error(`小红书帖子 ${post.externalId} 在 15 秒内没有打开详情页，未保存错误页面截图`);
 }
 
 async function openSearch(driver: AndroidPhoneDriver, term: string) {
@@ -217,18 +235,19 @@ export async function discoverXiaohongshu(_accountId: string, terms: string[], d
           if (!card) throw new Error(`第 ${candidateIndex + 1} 个候选不可点击`);
           const cardData = parseResultCard(card, term);
           const detail = await driver.source();
+          const coverEvidence = { bytes: await driver.screenshot(), mimeType: "image/png" as const, capturedAt: new Date().toISOString(), source: "device_screenshot" as const };
           const comments = parseComments(detail);
           if (comments === undefined) throw new Error("未采集到评论数");
           const publication = await findPublishedAt(driver, detail);
           if (!publication) throw new Error("未采集到发布时间");
           const link = await copyOpenedNoteLink(driver);
           const mediaType = link.mediaTypeHint ?? "图文" as const;
-          const post: XiaohongshuDiscoveryPost = { externalId: link.externalId, canonicalUrl: link.canonicalUrl, author: cardData.author, title: cardData.title, likes: cardData.likes, comments, publishedAt: publication.publishedAt, mediaType, term, rawPayload: { source: "xiaohongshu-android-share-link", term, resultAccessibilityLabel: cardData.resultAccessibilityLabel, publicationEvidence: publication.evidence, publicationScrollAttempts: publication.scrollAttempts, shareLinkResolved: true } };
-          const missingChecklist = [!post.externalId && "真实 externalId", !post.canonicalUrl && "真实链接", !post.author && "作者", !post.title && "标题", !Number.isFinite(post.likes) && "点赞数", !Number.isFinite(post.comments) && "评论数", !post.publishedAt && "发布时间", !post.mediaType && "媒体类型", !post.term && "命中词"].filter((item): item is string => Boolean(item));
+          const post: XiaohongshuDiscoveryPost = { externalId: link.externalId, canonicalUrl: link.canonicalUrl, author: cardData.author, title: cardData.title, likes: cardData.likes, comments, publishedAt: publication.publishedAt, mediaType, term, rawPayload: { source: "xiaohongshu-android-share-link", term, resultAccessibilityLabel: cardData.resultAccessibilityLabel, publicationEvidence: publication.evidence, publicationScrollAttempts: publication.scrollAttempts, shareLinkResolved: true, coverEvidence: { source: coverEvidence.source, mimeType: coverEvidence.mimeType, capturedAt: coverEvidence.capturedAt } }, coverEvidence };
+          const missingChecklist = [!post.externalId && "真实 externalId", !post.canonicalUrl && "真实链接", !post.author && "作者", !post.title && "标题", !Number.isFinite(post.likes) && "点赞数", !Number.isFinite(post.comments) && "评论数", !post.publishedAt && "发布时间", !post.mediaType && "媒体类型", !post.term && "命中词", !post.coverEvidence.bytes.length && "截图封面"].filter((item): item is string => Boolean(item));
           if (missingChecklist.length) throw new Error(`字段清单未完成：${missingChecklist.join("、")}`);
           log("info", "candidate_read", `读取候选：${cardData.title}，点赞 ${cardData.likes}，评论 ${comments}，发布于 ${publication.publishedAt}`, term, { likes: cardData.likes, comments, publishedAt: publication.publishedAt, publicationEvidence: publication.evidence, checklistComplete: true });
           posts.push(post);
-          log("info", "candidate_captured", "字段清单完整并已取得小红书真实分享链接", term, { externalId: link.externalId, canonicalUrl: link.canonicalUrl, checklistComplete: true });
+          log("info", "candidate_captured", "字段清单完整，已取得真实分享链接和截图封面", term, { externalId: link.externalId, canonicalUrl: link.canonicalUrl, coverCapturedAt: coverEvidence.capturedAt, checklistComplete: true });
           log("info", "term_completed", `关键词完成：取得 1 条字段完整的真实笔记`, term, { captured: 1 });
           captured = true;
         } catch (error) {

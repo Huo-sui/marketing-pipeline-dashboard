@@ -10,6 +10,7 @@ import { ensureWorkspace, workspaceSnapshot } from "./db/repositories/workspaceR
 import { AutoGlmProviderError, autoGlmProviderStatus, testAutoGlmProvider } from "./providers/zhipuAutoGlmProvider.js";
 import { emptyPlatformDiscovery, getPlatformAdapter, listPlatformAdapters, platformAdapterStatus } from "./platforms.js";
 import { engagementAgeBucket, scorePositiveEngagementOutlier } from "./scoring/robustAnomaly.js";
+import { scoreViralPost, type ViralScoreResult } from "./scoring/viralScore.js";
 import { LocalArtifactStorage, ArtifactStorageError, validateArtifactName } from "./storage/LocalArtifactStorage.js";
 import { numberInput, objectInput, optionalString, requiredString, stringArray, uuidParam, ValidationError } from "./validation/input.js";
 import { createInsight, getSourceAnalysisContext, listInsights, patchInsight, saveSourceAnalysis, type InsightEvidenceType, type InsightKind } from "./workflows/topicWorkbench.js";
@@ -21,6 +22,23 @@ const BASE = "/api/v1";
 const storage = new LocalArtifactStorage();
 let workspaceId: string | undefined = process.env.MARKETING_PIPELINE_WORKSPACE_ID;
 const allowedMimeTypes = new Set(["image/gif", "image/jpeg", "image/png", "image/webp", "audio/mpeg", "audio/wav", "video/mp4", "video/quicktime", "video/webm", "application/json", "text/plain"]);
+
+async function ensureSourcePostCover(tx: Prisma.TransactionClient, input: { workspaceId: string; projectId: string; sourcePostId: string; evidence: { bytes: Buffer; mimeType: "image/png" | "image/jpeg" | "image/webp"; capturedAt: string; source: string } }) {
+  const existing = await tx.artifactLink.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId, entityType: "source_post", entityId: input.sourcePostId, role: "cover" }, orderBy: { createdAt: "desc" } });
+  if (existing) return existing.artifactId;
+  const artifactId = randomUUID();
+  const extension = input.evidence.mimeType === "image/jpeg" ? "jpg" : input.evidence.mimeType === "image/webp" ? "webp" : "png";
+  const originalName = `source-cover-${input.sourcePostId}.${extension}`;
+  const stored = await storage.put({ id: artifactId, workspaceId: input.workspaceId, projectId: input.projectId, kind: "source_cover", mimeType: input.evidence.mimeType, originalName, body: Readable.from(input.evidence.bytes) });
+  try {
+    await tx.artifact.create({ data: { id: artifactId, workspaceId: input.workspaceId, projectId: input.projectId, kind: "source_cover", storageProvider: "local", storageKey: stored.storageKey, originalName, mimeType: input.evidence.mimeType, sizeBytes: BigInt(stored.sizeBytes), sha256: stored.sha256, status: "ready", metadata: normalizeJson({ capturedAt: input.evidence.capturedAt, source: input.evidence.source, purpose: "source_post_cover_evidence" }) } });
+    await tx.artifactLink.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, artifactId, entityType: "source_post", entityId: input.sourcePostId, role: "cover" } });
+    return artifactId;
+  } catch (error) {
+    await storage.delete(artifactId).catch(() => undefined);
+    throw error;
+  }
+}
 
 function json(response: ServerResponse, status: number, body: unknown) {
   response.statusCode = status;
@@ -149,6 +167,7 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
   const runner = account ? await db.accountRunner.findFirst({ where: { accountId: account.id, workspaceId: workspace.id } }) : null;
   let discovery = emptyPlatformDiscovery();
   let discovered = discovery.posts;
+  const scoreByExternalId = new Map<string, ViralScoreResult>();
   let errorCode = failedCheck ? `PREFLIGHT_${failedCheck.key.toUpperCase()}` : "";
   let errorMessage = failedCheck ? `${failedCheck.label}未就绪：${failedCheck.detail}` : "";
   if (!failedCheck) {
@@ -162,6 +181,7 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
           const value = post[field];
           if (field === "likes" || field === "comments") return typeof value !== "number" || !Number.isFinite(value) || value < 0;
           if (field === "rawPayload") return !value || typeof value !== "object" || Array.isArray(value);
+          if (field === "coverEvidence") return !value || typeof value !== "object" || Array.isArray(value) || !Buffer.isBuffer(value.bytes) || value.bytes.length === 0 || typeof value.mimeType !== "string" || !["image/png", "image/jpeg", "image/webp"].includes(value.mimeType) || typeof value.capturedAt !== "string" || Number.isNaN(new Date(value.capturedAt).getTime());
           if (field === "publishedAt") return typeof value !== "string" || !value.trim() || Number.isNaN(new Date(value).getTime());
           return typeof value !== "string" || !value.trim();
         });
@@ -169,25 +189,21 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
       }
       const capturedPosts = discovery.posts;
       const excludes = topic.excludeTerms.map((term) => term.trim().toLocaleLowerCase()).filter(Boolean);
+      const scoringCapturedAt = new Date();
       const qualificationLogs = capturedPosts.flatMap((post) => {
         const reasons: string[] = [];
         const searchable = `${post.title}\n${post.author}\n${post.term}`.toLocaleLowerCase();
         const matchedExclude = excludes.find((term) => searchable.includes(term));
         if (matchedExclude) reasons.push(`命中排除词：${matchedExclude}`);
-        if (post.likes < topic.minLikes) reasons.push(`点赞 ${post.likes} < ${topic.minLikes}`);
-        if (post.comments < topic.minComments) reasons.push(`评论 ${post.comments} < ${topic.minComments}`);
-        if (post.publishedAt) {
-          const ageHours = Math.max(0, (Date.now() - new Date(post.publishedAt).getTime()) / 3_600_000);
-          if (ageHours > topic.maxAgeHours) reasons.push(`发布时间距今 ${ageHours.toFixed(1)}h > ${topic.maxAgeHours}h`);
-        }
-        const score = Math.min(100, (topic.minLikes > 0 ? post.likes / topic.minLikes * 50 : 50) + (topic.minComments > 0 ? post.comments / topic.minComments * 50 : 50));
-        if (score < topic.minScore) reasons.push(`评分 ${score.toFixed(1)} < ${topic.minScore}`);
-        return [{ post, reasons, score }];
+        const scoring = scoreViralPost({ likes: post.likes, comments: post.comments, publishedAt: post.publishedAt!, capturedAt: scoringCapturedAt }, { minLikes: topic.minLikes, minComments: topic.minComments, maxAgeHours: topic.maxAgeHours });
+        scoreByExternalId.set(post.externalId, scoring);
+        if (scoring.total < topic.minScore) reasons.push(`三角评分 ${scoring.total.toFixed(1)} < 硬阈值 ${topic.minScore}`);
+        return [{ post, reasons, scoring }];
       });
       const qualified = qualificationLogs.filter((item) => item.reasons.length === 0);
       discovered = qualified.map((item) => item.post);
-      discovery.logs.push(...qualificationLogs.map((item) => ({ timestamp: new Date().toISOString(), level: item.reasons.length ? "info" as const : "info" as const, eventType: item.reasons.length ? "post_skipped" : "post_qualified", message: item.reasons.length ? `跳过帖子：${item.reasons.join("；")}` : `帖子通过硬阈值（评分 ${item.score.toFixed(1)}）`, payload: { externalId: item.post.externalId, likes: item.post.likes, comments: item.post.comments, publishedAt: item.post.publishedAt, score: item.score, reasons: item.reasons } })));
-      discovery.logs.push({ timestamp: new Date().toISOString(), level: "info", eventType: "qualification_summary", message: `硬阈值筛选完成：真实抓取 ${capturedPosts.length} 条，合格 ${discovered.length} 条`, payload: { captured: capturedPosts.length, qualified: discovered.length } });
+      discovery.logs.push(...qualificationLogs.map((item) => ({ timestamp: new Date().toISOString(), level: "info" as const, eventType: item.reasons.length ? "post_skipped" : "post_qualified", message: item.reasons.length ? `跳过帖子：${item.reasons.join("；")}` : `帖子通过评分硬阈值（三角评分 ${item.scoring.total.toFixed(1)} ≥ ${topic.minScore}）`, payload: { externalId: item.post.externalId, likes: item.post.likes, comments: item.post.comments, publishedAt: item.post.publishedAt, score: item.scoring.total, scoring: item.scoring, reasons: item.reasons } })));
+      discovery.logs.push({ timestamp: new Date().toISOString(), level: "info", eventType: "qualification_summary", message: `评分硬阈值筛选完成：Bot 提供 ${capturedPosts.length} 条原始候选，合格 ${discovered.length} 条`, payload: { captured: capturedPosts.length, qualified: discovered.length, minScore: topic.minScore } });
       const failedSearch = discovery.logs.findLast((event) => event.level === "error" && event.eventType === "search_failed");
       if (!discovered.length && failedSearch) {
         errorCode = "DISCOVERY_EXECUTION_FAILED";
@@ -212,7 +228,8 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
       const baselinePostById = new Map(baselinePosts.map((item) => [item.id, item]));
       const historical = baselinePosts.length ? await tx.sourceMetricSnapshot.findMany({ where: { workspaceId: workspace.id, projectId: topic.projectId, sourcePostId: { in: baselinePosts.map((item) => item.id) }, capturedAt: { gte: baselineSince } }, orderBy: { capturedAt: "desc" } }) : [];
       for (const post of discovered) {
-        const score = Math.min(100, (topic.minLikes > 0 ? post.likes / topic.minLikes * 50 : 50) + (topic.minComments > 0 ? post.comments / topic.minComments * 50 : 50));
+        const scoring = scoreByExternalId.get(post.externalId) ?? scoreViralPost({ likes: post.likes, comments: post.comments, publishedAt: post.publishedAt!, capturedAt: startedAt }, { minLikes: topic.minLikes, minComments: topic.minComments, maxAgeHours: topic.maxAgeHours });
+        const score = scoring.total;
         const candidateAgeHours = post.publishedAt ? Math.max(1, (startedAt.getTime() - new Date(post.publishedAt).getTime()) / 3_600_000) : undefined;
         const candidateBucket = candidateAgeHours === undefined ? undefined : engagementAgeBucket(candidateAgeHours);
         const seenSources = new Set<string>();
@@ -230,14 +247,15 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
         const anomaly = !topic.anomalyEnabled ? undefined
           : candidateAgeHours === undefined ? { state: "missing_published_at" as const, cohortSize: cohort.length }
           : scorePositiveEngagementOutlier({ likes: post.likes, comments: post.comments, ageHours: candidateAgeHours }, cohort, { minSamples: topic.anomalyMinSamples, zThreshold: topic.anomalyZThreshold });
-        const reason = anomaly?.state === "positive_outlier" ? `同平台同话题正向异常：z=${anomaly.score.toFixed(2)}`
-          : anomaly?.state === "insufficient_baseline" ? `达到硬阈值；相对异常基线不足（${anomaly.cohortSize}/${topic.anomalyMinSamples}）`
-          : anomaly?.state === "normal" ? `达到硬阈值；相对异常正常（z=${anomaly.score.toFixed(2)}）`
-          : anomaly?.state === "missing_published_at" ? "达到硬阈值；缺少发布时间，未计算相对异常"
-          : score >= topic.minScore ? "达到硬阈值" : "未达到硬阈值";
+        const admissionReason = `三角评分 ${score.toFixed(1)} ≥ 硬阈值 ${topic.minScore}`;
+        const reason = anomaly?.state === "positive_outlier" ? `${admissionReason}；同平台同话题正向异常 z=${anomaly.score.toFixed(2)}`
+          : anomaly?.state === "insufficient_baseline" ? `${admissionReason}；相对异常基线不足（${anomaly.cohortSize}/${topic.anomalyMinSamples}）`
+          : anomaly?.state === "normal" ? `${admissionReason}；相对异常正常（z=${anomaly.score.toFixed(2)}）`
+          : admissionReason;
         const canonicalHash = createHash("md5").update(post.canonicalUrl).digest("hex");
         const source = await tx.sourcePost.upsert({ where: { projectId_platform_externalId: { projectId: topic.projectId, platform: topic.platform, externalId: post.externalId } }, create: { workspaceId: workspace.id, projectId: topic.projectId, platform: topic.platform, externalId: post.externalId, canonicalUrl: post.canonicalUrl, canonicalHash, author: post.author, title: post.title, publishedAt: post.publishedAt ? new Date(post.publishedAt) : undefined, mediaType: post.mediaType, rawPayload: normalizeJson(post.rawPayload) }, update: { canonicalUrl: post.canonicalUrl, canonicalHash, author: post.author, title: post.title, publishedAt: post.publishedAt ? new Date(post.publishedAt) : undefined, mediaType: post.mediaType, rawPayload: normalizeJson(post.rawPayload) } });
-        await tx.sourceMetricSnapshot.create({ data: { workspaceId: workspace.id, projectId: topic.projectId, sourcePostId: source.id, likes: post.likes, comments: post.comments, score, rawPayload: normalizeJson({ term: post.term, anomaly }) } });
+        await ensureSourcePostCover(tx, { workspaceId: workspace.id, projectId: topic.projectId, sourcePostId: source.id, evidence: post.coverEvidence });
+        await tx.sourceMetricSnapshot.create({ data: { workspaceId: workspace.id, projectId: topic.projectId, sourcePostId: source.id, likes: post.likes, comments: post.comments, score, rawPayload: normalizeJson({ term: post.term, scoring, anomaly }) } });
         await tx.sourcePostMatch.upsert({ where: { sourcePostId_topicWatchId: { sourcePostId: source.id, topicWatchId: topic.id } }, create: { workspaceId: workspace.id, projectId: topic.projectId, sourcePostId: source.id, topicWatchId: topic.id, score, reason }, update: { score, reason } });
         outputCount += 1;
         if (anomaly) discovery.logs.push({ timestamp: new Date().toISOString(), level: "info", eventType: "anomaly_assessed", message: reason, term: post.term, payload: { externalId: post.externalId, platform: topic.platform, term: post.term, publicationAgeBucket: candidateBucket, cohortSize: anomaly.cohortSize, anomaly } });
@@ -380,10 +398,12 @@ async function listSourcePosts(request: IncomingMessage, response: ServerRespons
   const posts = await db.sourcePost.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { capturedAt: "desc" } });
   const metrics = await db.sourceMetricSnapshot.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { capturedAt: "desc" } });
   const matches = await db.sourcePostMatch.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { createdAt: "desc" } });
+  const coverLinks = posts.length ? await db.artifactLink.findMany({ where: { workspaceId: workspace.id, entityType: "source_post", role: "cover", entityId: { in: posts.map((post) => post.id) } }, orderBy: { createdAt: "desc" } }) : [];
   const patternCards = await db.patternCard.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) } });
   const patternVersions = patternCards.length ? await db.patternCardVersion.findMany({ where: { workspaceId: workspace.id, patternCardId: { in: patternCards.map((card) => card.id) } }, orderBy: { version: "desc" } }) : [];
   const latest = new Map<string, typeof metrics[number]>(); for (const metric of metrics) if (!latest.has(metric.sourcePostId)) latest.set(metric.sourcePostId, metric);
   const latestMatch = new Map<string, typeof matches[number]>(); for (const match of matches) if (!latestMatch.has(match.sourcePostId)) latestMatch.set(match.sourcePostId, match);
+  const coverBySource = new Map<string, typeof coverLinks[number]>(); for (const link of coverLinks) if (!coverBySource.has(link.entityId)) coverBySource.set(link.entityId, link);
   const cardBySource = new Map(patternCards.map((card) => [card.sourcePostId, card]));
   const latestPattern = new Map<string, typeof patternVersions[number]>(); for (const version of patternVersions) if (!latestPattern.has(version.patternCardId)) latestPattern.set(version.patternCardId, version);
   json(response, 200, posts.map((post) => {
@@ -391,18 +411,85 @@ async function listSourcePosts(request: IncomingMessage, response: ServerRespons
     const match = latestMatch.get(post.id);
     const raw = metric?.rawPayload && typeof metric.rawPayload === "object" && !Array.isArray(metric.rawPayload) ? metric.rawPayload as Record<string, unknown> : {};
     const anomaly = raw.anomaly && typeof raw.anomaly === "object" && !Array.isArray(raw.anomaly) ? raw.anomaly as Record<string, unknown> : undefined;
+    const scoring = raw.scoring && typeof raw.scoring === "object" && !Array.isArray(raw.scoring) ? raw.scoring as Record<string, unknown> : undefined;
+    const components = scoring?.components && typeof scoring.components === "object" && !Array.isArray(scoring.components) ? scoring.components as Record<string, unknown> : undefined;
     const sourceRaw = post.rawPayload && typeof post.rawPayload === "object" && !Array.isArray(post.rawPayload) ? post.rawPayload as Record<string, unknown> : {};
     const signals = [
       post.publishedAt ? `发布时间已确认：${post.publishedAt.toISOString()}` : "发布时间待确认",
-      `硬阈值结果：${match?.reason ?? "未匹配话题规则"}`,
+      `评分硬阈值结果：${match?.reason ?? "未匹配话题规则"}`,
       anomaly?.state === "insufficient_baseline" ? `相对异常基线不足：${Number(anomaly.cohortSize ?? 0)} 条` : anomaly?.state === "positive_outlier" ? "相对异常：正向爆发" : anomaly?.state === "normal" ? "相对异常：正常波动" : "相对异常：未启用",
     ];
     const likes = metric?.likes ?? 0;
     const comments = metric?.comments ?? 0;
     const card = cardBySource.get(post.id);
     const pattern = card ? latestPattern.get(card.id) : undefined;
-    return { id: post.id, workspaceId: post.workspaceId, projectId: post.projectId, platform: post.platform, externalId: post.externalId, canonicalUrl: post.canonicalUrl, author: post.author, title: post.title, publishedAt: post.publishedAt, capturedAt: post.capturedAt, mediaType: post.mediaType, reviewState: post.reviewState, action: post.action, createdAt: post.createdAt, updatedAt: post.updatedAt, likes, comments, score: metric?.score ?? 0, reason: match?.reason ?? "未匹配话题规则", topic: typeof raw.term === "string" ? raw.term : "", capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", patternCard: pattern?.payload, patternCardVersion: pattern?.version, evidence: { signals, scoreBreakdown: [{ label: "点赞", value: likes.toLocaleString("zh-CN") }, { label: "评论", value: comments.toLocaleString("zh-CN") }, { label: "评论率", value: likes > 0 ? `${(comments / likes * 100).toFixed(2)}%` : "—" }], capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", capturedAt: metric?.capturedAt ?? post.capturedAt } };
+    const cover = coverBySource.get(post.id);
+    const scoreBreakdown = scoring ? [
+      { label: "发布时长", value: typeof scoring.ageHours === "number" ? `${scoring.ageHours.toFixed(1)} 小时` : "—" },
+      { label: "点赞速度", value: typeof scoring.likesPerHour === "number" ? `${scoring.likesPerHour.toFixed(2)}/小时` : "—" },
+      { label: "评论速度", value: typeof scoring.commentsPerHour === "number" ? `${scoring.commentsPerHour.toFixed(2)}/小时` : "—" },
+      { label: "评论率", value: typeof scoring.commentRate === "number" ? `${(scoring.commentRate * 100).toFixed(2)}%` : "—" },
+      { label: "时间分", value: typeof components?.freshness === "number" ? components.freshness.toFixed(1) : "—" },
+      { label: "点赞速度分", value: typeof components?.likeVelocity === "number" ? components.likeVelocity.toFixed(1) : "—" },
+      { label: "评论强度分", value: typeof components?.commentStrength === "number" ? components.commentStrength.toFixed(1) : "—" },
+    ] : [{ label: "点赞", value: likes.toLocaleString("zh-CN") }, { label: "评论", value: comments.toLocaleString("zh-CN") }, { label: "评论率", value: likes > 0 ? `${(comments / likes * 100).toFixed(2)}%` : "—" }];
+    return { id: post.id, workspaceId: post.workspaceId, projectId: post.projectId, platform: post.platform, externalId: post.externalId, canonicalUrl: post.canonicalUrl, author: post.author, title: post.title, publishedAt: post.publishedAt, capturedAt: post.capturedAt, mediaType: post.mediaType, reviewState: post.reviewState, action: post.action, createdAt: post.createdAt, updatedAt: post.updatedAt, likes, comments, score: metric?.score ?? 0, reason: match?.reason ?? "未匹配话题规则", topic: typeof raw.term === "string" ? raw.term : "", image: cover ? `${BASE}/artifacts/${cover.artifactId}/content` : "", capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", patternCard: pattern?.payload, patternCardVersion: pattern?.version, evidence: { signals, scoreBreakdown, capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", capturedAt: metric?.capturedAt ?? post.capturedAt } };
   }));
+}
+
+async function captureSourcePostCover(response: ServerResponse, sourcePostId: string) {
+  const { db, workspace } = await currentWorkspace();
+  uuidParam(sourcePostId, "sourcePostId");
+  const post = await db.sourcePost.findFirstOrThrow({ where: { id: sourcePostId, workspaceId: workspace.id } });
+  const existing = await db.artifactLink.findFirst({ where: { workspaceId: workspace.id, projectId: post.projectId, entityType: "source_post", entityId: post.id, role: "cover" }, orderBy: { createdAt: "desc" } });
+  if (existing) { json(response, 200, { ok: true, artifactId: existing.artifactId, image: `${BASE}/artifacts/${existing.artifactId}/content`, reused: true }); return; }
+  const adapter = getPlatformAdapter(post.platform);
+  if (!adapter?.captureCover) throw new ValidationError(`${post.platform} Adapter 尚未实现封面补采`);
+  const topic = await db.topicWatch.findFirst({ where: { workspaceId: workspace.id, projectId: post.projectId, platform: post.platform, collectorAccountBindingId: { not: null } }, orderBy: { updatedAt: "desc" } });
+  const binding = topic?.collectorAccountBindingId ? await db.projectAccountBinding.findFirst({ where: { id: topic.collectorAccountBindingId, workspaceId: workspace.id, projectId: post.projectId } }) : null;
+  const account = binding ? await db.socialAccount.findFirst({ where: { id: binding.accountId, workspaceId: workspace.id, lifecycleStatus: "active" } }) : null;
+  const runner = account ? await db.accountRunner.findFirst({ where: { accountId: account.id, workspaceId: workspace.id } }) : null;
+  if (!account || !runner?.deviceId) throw new ValidationError(`${post.platform} 封面补采缺少已绑定账号或手机 Runner`);
+  const evidence = await adapter.captureCover(account.id, { externalId: post.externalId, canonicalUrl: post.canonicalUrl, author: post.author, title: post.title }, runner.deviceId);
+  const artifactId = await db.$transaction((tx) => ensureSourcePostCover(tx, { workspaceId: workspace.id, projectId: post.projectId, sourcePostId: post.id, evidence }));
+  json(response, 200, { ok: true, artifactId, image: `${BASE}/artifacts/${artifactId}/content`, reused: false });
+}
+
+async function rescoreSourcePosts(request: IncomingMessage, response: ServerResponse) {
+  const { db, workspace } = await currentWorkspace();
+  const input = objectInput(await bodyJson(request));
+  const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId");
+  const posts = await db.sourcePost.findMany({ where: { workspaceId: workspace.id, projectId } });
+  const metrics = await db.sourceMetricSnapshot.findMany({ where: { workspaceId: workspace.id, projectId }, orderBy: { capturedAt: "desc" } });
+  const matches = await db.sourcePostMatch.findMany({ where: { workspaceId: workspace.id, projectId }, orderBy: { createdAt: "desc" } });
+  const topics = await db.topicWatch.findMany({ where: { workspaceId: workspace.id, projectId } });
+  const latestMetric = new Map<string, typeof metrics[number]>(); for (const metric of metrics) if (!latestMetric.has(metric.sourcePostId)) latestMetric.set(metric.sourcePostId, metric);
+  const latestMatch = new Map<string, typeof matches[number]>(); for (const match of matches) if (!latestMatch.has(match.sourcePostId)) latestMatch.set(match.sourcePostId, match);
+  const topicById = new Map(topics.map((topic) => [topic.id, topic]));
+  let updated = 0;
+  let unscorable = 0;
+  await db.$transaction(async (tx) => {
+    for (const post of posts) {
+      const metric = latestMetric.get(post.id);
+      const match = latestMatch.get(post.id);
+      const topic = match?.topicWatchId ? topicById.get(match.topicWatchId) : undefined;
+      if (!metric || !match || !topic) continue;
+      const oldRaw = metric.rawPayload && typeof metric.rawPayload === "object" && !Array.isArray(metric.rawPayload) ? metric.rawPayload as Record<string, unknown> : {};
+      if (!post.publishedAt || metric.likes === null || metric.comments === null) {
+        const reason = "历史候选缺少发布时间或互动原始值，无法通过评分硬阈值";
+        await tx.sourceMetricSnapshot.update({ where: { id: metric.id }, data: { score: 0, rawPayload: normalizeJson({ ...oldRaw, scoring: { version: "velocity-triangle-v1", state: "unscorable", reason } }) } });
+        await tx.sourcePostMatch.update({ where: { id: match.id }, data: { score: 0, reason } });
+        unscorable += 1;
+        continue;
+      }
+      const scoring = scoreViralPost({ likes: metric.likes, comments: metric.comments, publishedAt: post.publishedAt, capturedAt: metric.capturedAt }, { minLikes: topic.minLikes, minComments: topic.minComments, maxAgeHours: topic.maxAgeHours });
+      const reason = scoring.total >= topic.minScore ? `三角评分 ${scoring.total.toFixed(1)} ≥ 硬阈值 ${topic.minScore}` : `三角评分 ${scoring.total.toFixed(1)} < 硬阈值 ${topic.minScore}`;
+      await tx.sourceMetricSnapshot.update({ where: { id: metric.id }, data: { score: scoring.total, rawPayload: normalizeJson({ ...oldRaw, scoring }) } });
+      await tx.sourcePostMatch.update({ where: { id: match.id }, data: { score: scoring.total, reason } });
+      updated += 1;
+    }
+  });
+  json(response, 200, { ok: true, projectId, updated, unscorable });
 }
 
 async function reviewSourcePosts(request: IncomingMessage, response: ServerResponse) {
@@ -817,6 +904,9 @@ async function handle(request: IncomingMessage, response: ServerResponse, pathna
     if (artifact) { const id = uuidParam(artifact[1], "artifactId"); const { db, workspace } = await currentWorkspace(); const record = await db.artifact.findFirstOrThrow({ where: { id, workspaceId: workspace.id, status: "ready" } }); if (artifact[2] && request.method === "GET") { response.statusCode = 200; response.setHeader("Content-Type", record.mimeType); response.setHeader("Content-Length", record.sizeBytes.toString()); response.setHeader("Content-Disposition", `inline; filename="${(record.originalName || `${record.id}.bin`).replace(/[^a-zA-Z0-9._-]/g, "_")}"`); (await storage.get(record.id)).pipe(response); return; } if (request.method === "GET") { json(response, 200, record); return; } if (request.method === "DELETE") { await db.artifact.update({ where: { id }, data: { status: "deleted" } }); await storage.delete(record.id); json(response, 204, {}); return; } }
     const sourcePosts = pathname === `${BASE}/source-posts`;
     if (sourcePosts && request.method === "GET") { await listSourcePosts(request, response); return; }
+    if (pathname === `${BASE}/source-posts/rescore` && request.method === "POST") { await rescoreSourcePosts(request, response); return; }
+    const sourceCover = pathname.match(new RegExp(`^${BASE}/source-posts/([^/]+)/cover$`));
+    if (sourceCover && request.method === "POST") { await captureSourcePostCover(response, sourceCover[1]); return; }
     const sourceAnalysis = pathname.match(new RegExp(`^${BASE}/source-posts/([^/]+)/(analysis-context|analysis|comment-runs)$`));
     if (sourceAnalysis && request.method === "GET" && sourceAnalysis[2] === "analysis-context") { await analysisContext(request, response, sourceAnalysis[1]); return; }
     if (sourceAnalysis && request.method === "PUT" && sourceAnalysis[2] === "analysis") { await saveAnalysis(request, response, sourceAnalysis[1]); return; }

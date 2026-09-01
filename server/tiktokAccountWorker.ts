@@ -53,6 +53,7 @@ export type TikTokDiscoveryPost = {
   mediaType: "视频";
   term: string;
   rawPayload: Record<string, unknown>;
+  coverEvidence: { bytes: Buffer; mimeType: "image/png"; capturedAt: string; source: "device_screenshot" };
 };
 
 export type TikTokDiscoveryLog = {
@@ -285,7 +286,10 @@ function normalizeUiSource(xml: string) {
 
 async function screenshot(device: Device) {
   const result = await execFileAsync(resolveAdbExecutable(), [...deviceArgs(device.serial), "exec-out", "screencap", "-p"], { windowsHide: true, maxBuffer: 12_000_000, timeout: 12_000, killSignal: "SIGKILL", encoding: "buffer" as never });
-  return Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.from(result.stdout as unknown as string, "binary");
+  const image = Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.from(result.stdout as unknown as string, "binary");
+  const pngOffset = image.indexOf(Buffer.from("89504e470d0a1a0a", "hex"));
+  if (pngOffset < 0) throw new Error("TikTok 截图没有返回有效 PNG");
+  return image.subarray(pngOffset);
 }
 
 async function modelScreenshot(device: Device) {
@@ -814,12 +818,13 @@ export async function discoverTikTok(accountId: string, terms: string[], deviceI
       checkedCandidates += 1;
       const xml = await dumpUi(device).catch(() => "");
       const metadata = parseOpenedPostMetadata(xml, term);
+      const coverEvidence = { bytes: await screenshot(device), mimeType: "image/png" as const, capturedAt: new Date().toISOString(), source: "device_screenshot" as const };
       log("info", "candidate_read", `读取候选 ${candidate}：${metadata.publishedAt ? `发布时间 ${metadata.publishedAt}` : "未识别发布时间"}，点赞 ${metadata.likes}，评论 ${metadata.comments}`, term, page, { candidate, likes: metadata.likes, comments: metadata.comments, publishedAt: metadata.publishedAt });
       try {
         const link = await copyPostLinkWithAgent(device, term);
         if (!seen.has(link.externalId)) {
           seen.add(link.externalId);
-          posts.push({ externalId: link.externalId, canonicalUrl: link.canonicalUrl, ...metadata, mediaType: "视频", term, rawPayload: { source: "autoglm-share-link", term, candidate, shareLinkResolved: true } });
+          posts.push({ externalId: link.externalId, canonicalUrl: link.canonicalUrl, ...metadata, mediaType: "视频", term, rawPayload: { source: "autoglm-share-link", term, candidate, shareLinkResolved: true, coverEvidence: { source: coverEvidence.source, mimeType: coverEvidence.mimeType, capturedAt: coverEvidence.capturedAt } }, coverEvidence });
           log("info", "candidate_captured", `候选 ${candidate} 已取得真实分享链接`, term, page, { externalId: link.externalId });
         } else {
           log("warn", "duplicate_candidate", `候选 ${candidate} 分享链接重复，继续下一个候选`, term, page);

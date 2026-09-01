@@ -2,13 +2,21 @@
 
 The radar treats an anomaly as an unusually strong positive engagement result, not as fraud or bad data.
 
-## Admission and anomaly are separate
+## Collection, admission score, and anomaly are separate
 
-A post first has to meet the rule's deterministic admission gates:
+Platform collectors return source facts and evidence only. They do not assign a
+score. The control plane calculates `velocity-triangle-v1` from:
 
-- publication age is within `maxAgeHours`;
-- likes are at least `minLikes`;
-- comments are at least `minComments`.
+- publication age at capture time;
+- likes per publication hour;
+- comments per publication hour and comment rate.
+
+Freshness contributes 25%, like velocity 35%, and comment strength 40%.
+Comment strength is 60% comment velocity and 40% comment rate. Exponential
+saturation prevents large accounts from forcing every result to 100. A zero
+`minComments` value never awards free points: the curve falls back to a 3%
+comment reference. `minLikes`, `minComments`, and `maxAgeHours` calibrate the
+curve; only the TopicWatch `minScore` is the deterministic admission gate.
 
 Anomaly scoring then compares the post with a cohort from the same platform, tracked term, and comparable publication-age bucket. This prevents an established account or an older post from being compared directly with a new post from a different topic.
 

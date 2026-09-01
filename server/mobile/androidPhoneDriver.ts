@@ -99,6 +99,24 @@ export class AndroidPhoneDriver {
     return { width: Number(match?.[1] ?? 1080), height: Number(match?.[2] ?? 2400) };
   }
 
+  /** Capture the current device screen in-process without opening a console window. */
+  async screenshot() {
+    const result = await execFileAsync(resolveAdbExecutable(), [...deviceArgs(this.device.serial), "exec-out", "screencap", "-p"], {
+      windowsHide: true,
+      timeout: 15_000,
+      killSignal: "SIGKILL",
+      maxBuffer: 16_000_000,
+      encoding: "buffer" as never,
+    });
+    const image = Buffer.isBuffer(result.stdout) ? result.stdout : Buffer.from(result.stdout as unknown as string, "binary");
+    const signature = Buffer.from("89504e470d0a1a0a", "hex");
+    const pngOffset = image.indexOf(signature);
+    if (pngOffset < 0) throw new Error(`${this.appLabel}截图没有返回有效 PNG`);
+    // Some Android vendor builds print a linker warning before screencap bytes.
+    // Keep only the real PNG stream instead of rejecting an otherwise valid image.
+    return image.subarray(pngOffset);
+  }
+
   async tap(x: number, y: number, waitMs = 900) {
     await this.adb(["shell", "input", "tap", String(Math.round(x)), String(Math.round(y))]);
     await new Promise((resolve) => setTimeout(resolve, waitMs));

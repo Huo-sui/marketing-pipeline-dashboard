@@ -8,7 +8,7 @@
  */
 import type { TikTokDiscoveryResult } from "./tiktokAccountWorker.js";
 import { discoverTikTok } from "./tiktokAccountWorker.js";
-import { discoverXiaohongshu } from "./platforms/xiaohongshuPhoneAdapter.js";
+import { captureXiaohongshuCover, discoverXiaohongshu } from "./platforms/xiaohongshuPhoneAdapter.js";
 import { xiaohongshuPublisherConfigurationState } from "./platforms/xiaohongshuPublisher.js";
 import { normalizeLoopbackServiceBaseUrl } from "./platforms/loopbackServiceUrl.js";
 
@@ -19,7 +19,14 @@ export type PlatformAdapterRequirements = {
   visualProvider: boolean;
 };
 
-export type PlatformDiscoveryRequiredField = "externalId" | "canonicalUrl" | "author" | "title" | "likes" | "comments" | "publishedAt" | "mediaType" | "term" | "rawPayload";
+export type PlatformDiscoveryRequiredField = "externalId" | "canonicalUrl" | "author" | "title" | "likes" | "comments" | "publishedAt" | "mediaType" | "term" | "rawPayload" | "coverEvidence";
+
+export type PlatformCoverEvidence = {
+  bytes: Buffer;
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  capturedAt: string;
+  source: "device_screenshot" | "platform_api";
+};
 
 export type PlatformAdapterStatus = {
   platform: string;
@@ -45,6 +52,7 @@ export type PlatformDiscoveryPost = {
   mediaType: "视频" | "图文" | "文本";
   term: string;
   rawPayload: Record<string, unknown>;
+  coverEvidence: PlatformCoverEvidence;
 };
 export type PlatformDiscoveryLog = TikTokDiscoveryResult["logs"][number];
 export type PlatformDiscoveryResult = { posts: PlatformDiscoveryPost[]; logs: PlatformDiscoveryLog[] };
@@ -57,6 +65,7 @@ export type PlatformAdapter = {
   label: string;
   status: () => PlatformAdapterStatus;
   discover: (accountId: string, terms: string[], deviceId?: string) => Promise<PlatformDiscoveryResult>;
+  captureCover?: (accountId: string, post: Pick<PlatformDiscoveryPost, "externalId" | "canonicalUrl" | "author" | "title">, deviceId?: string) => Promise<PlatformCoverEvidence>;
   collectComments?: (accountId: string, post: Pick<PlatformDiscoveryPost, "externalId" | "canonicalUrl">, limit: number, deviceId?: string) => Promise<PlatformCommentCollectionResult>;
 };
 
@@ -81,7 +90,7 @@ function createHttpAdapter(platform: string, label: string, envName: string): Pl
         mode: "http",
         capabilities: { phoneControl: false, identity: false, discovery: Boolean(baseUrl), commentCollection: false, publishing: false, engagement: false },
         requirements: { accountBinding: false, confirmedIdentity: false, phoneRunner: false, visualProvider: false },
-        extraction: { requiredFields: ["externalId", "canonicalUrl", "title", "likes", "comments", "mediaType", "term", "rawPayload"] },
+        extraction: { requiredFields: ["externalId", "canonicalUrl", "author", "title", "likes", "comments", "publishedAt", "mediaType", "term", "rawPayload", "coverEvidence"] },
         detail: baseUrl ? `HTTP Adapter 已配置（${envName}）` : `等待配置 ${envName}`,
       };
     },
@@ -103,7 +112,10 @@ function createHttpAdapter(platform: string, label: string, envName: string): Pl
         const canonicalUrl = typeof item.canonicalUrl === "string" ? item.canonicalUrl.trim() : "";
         if (!externalId || !canonicalUrl) return [];
         const mediaType = item.mediaType === "视频" ? "视频" as const : item.mediaType === "图文" ? "图文" as const : "文本" as const;
-        return [{ externalId, canonicalUrl, author: typeof item.author === "string" ? item.author : "", title: typeof item.title === "string" ? item.title : "", likes: typeof item.likes === "number" ? Math.max(0, Math.round(item.likes)) : 0, comments: typeof item.comments === "number" ? Math.max(0, Math.round(item.comments)) : 0, publishedAt: typeof item.publishedAt === "string" ? item.publishedAt : undefined, mediaType, term: typeof item.term === "string" ? item.term : terms[0] ?? "", rawPayload: item.rawPayload && typeof item.rawPayload === "object" ? item.rawPayload as Record<string, unknown> : item }];
+        const cover = item.coverEvidence && typeof item.coverEvidence === "object" && !Array.isArray(item.coverEvidence) ? item.coverEvidence as Record<string, unknown> : {};
+        const encoded = typeof cover.base64 === "string" ? cover.base64 : "";
+        const mimeType = cover.mimeType === "image/jpeg" ? "image/jpeg" as const : cover.mimeType === "image/webp" ? "image/webp" as const : "image/png" as const;
+        return [{ externalId, canonicalUrl, author: typeof item.author === "string" ? item.author : "", title: typeof item.title === "string" ? item.title : "", likes: typeof item.likes === "number" ? Math.max(0, Math.round(item.likes)) : 0, comments: typeof item.comments === "number" ? Math.max(0, Math.round(item.comments)) : 0, publishedAt: typeof item.publishedAt === "string" ? item.publishedAt : undefined, mediaType, term: typeof item.term === "string" ? item.term : terms[0] ?? "", rawPayload: item.rawPayload && typeof item.rawPayload === "object" ? item.rawPayload as Record<string, unknown> : item, coverEvidence: { bytes: Buffer.from(encoded, "base64"), mimeType, capturedAt: typeof cover.capturedAt === "string" ? cover.capturedAt : new Date().toISOString(), source: "platform_api" as const } }];
       }) : [];
       const logs = Array.isArray(payload.logs) ? payload.logs.flatMap((value) => {
         if (!value || typeof value !== "object") return [];
@@ -121,7 +133,7 @@ const tiktokAdapter: PlatformAdapter = {
   id: "tiktok-phone-v1",
   platform: "TikTok",
   label: "TikTok 手机 Adapter",
-  status: () => ({ platform: "TikTok", id: "tiktok-phone-v1", label: "TikTok 手机 Adapter", configured: true, mode: "phone", capabilities: { phoneControl: true, identity: true, discovery: true, commentCollection: false, publishing: false, engagement: false }, requirements: { accountBinding: true, confirmedIdentity: true, phoneRunner: true, visualProvider: true }, extraction: { requiredFields: ["externalId", "canonicalUrl", "author", "title", "likes", "comments", "publishedAt", "mediaType", "term", "rawPayload"] }, detail: "ADB + Appium UiAutomator2 + AutoGLM" }),
+  status: () => ({ platform: "TikTok", id: "tiktok-phone-v1", label: "TikTok 手机 Adapter", configured: true, mode: "phone", capabilities: { phoneControl: true, identity: true, discovery: true, commentCollection: false, publishing: false, engagement: false }, requirements: { accountBinding: true, confirmedIdentity: true, phoneRunner: true, visualProvider: true }, extraction: { requiredFields: ["externalId", "canonicalUrl", "author", "title", "likes", "comments", "publishedAt", "mediaType", "term", "rawPayload", "coverEvidence"] }, detail: "ADB + Appium UiAutomator2 + AutoGLM" }),
   discover: async (accountId, terms, deviceId) => discoverTikTok(accountId, terms, deviceId),
 };
 adapters.set(tiktokAdapter.platform, tiktokAdapter);
@@ -129,8 +141,9 @@ const xhsPhoneAdapter: PlatformAdapter = {
   id: "xiaohongshu-phone-v1",
   platform: "小红书",
   label: "小红书手机 Adapter",
-  status: () => { let commentBot: "configured" | "missing" | "invalid" = "missing"; if (process.env.XIAOHONGSHU_COMMENT_BOT_BASE_URL?.trim()) { try { normalizeLoopbackServiceBaseUrl(process.env.XIAOHONGSHU_COMMENT_BOT_BASE_URL, "XIAOHONGSHU_COMMENT_BOT_BASE_URL"); commentBot = "configured"; } catch { commentBot = "invalid"; } } const publisher = xiaohongshuPublisherConfigurationState(); return { platform: "小红书", id: "xiaohongshu-phone-v1", label: "小红书手机 Adapter", configured: true, mode: "phone", capabilities: { phoneControl: true, identity: true, discovery: true, commentCollection: commentBot === "configured", publishing: publisher === "configured", engagement: false }, requirements: { accountBinding: true, confirmedIdentity: true, phoneRunner: true, visualProvider: false }, commentCollection: { requirements: { accountBinding: true, confirmedIdentity: true, phoneRunner: false } }, extraction: { requiredFields: ["externalId", "canonicalUrl", "author", "title", "likes", "comments", "publishedAt", "mediaType", "term", "rawPayload"] }, detail: `Android Driver + 小红书字段清单 Playbook；评论 Bot ${commentBot === "configured" ? "已配置" : commentBot === "invalid" ? "地址无效" : "未配置"}；Publisher API ${publisher === "configured" ? "已配置" : publisher === "invalid" ? "地址无效" : "未配置"}` }; },
+  status: () => { let commentBot: "configured" | "missing" | "invalid" = "missing"; if (process.env.XIAOHONGSHU_COMMENT_BOT_BASE_URL?.trim()) { try { normalizeLoopbackServiceBaseUrl(process.env.XIAOHONGSHU_COMMENT_BOT_BASE_URL, "XIAOHONGSHU_COMMENT_BOT_BASE_URL"); commentBot = "configured"; } catch { commentBot = "invalid"; } } const publisher = xiaohongshuPublisherConfigurationState(); return { platform: "小红书", id: "xiaohongshu-phone-v1", label: "小红书手机 Adapter", configured: true, mode: "phone", capabilities: { phoneControl: true, identity: true, discovery: true, commentCollection: commentBot === "configured", publishing: publisher === "configured", engagement: false }, requirements: { accountBinding: true, confirmedIdentity: true, phoneRunner: true, visualProvider: false }, commentCollection: { requirements: { accountBinding: true, confirmedIdentity: true, phoneRunner: false } }, extraction: { requiredFields: ["externalId", "canonicalUrl", "author", "title", "likes", "comments", "publishedAt", "mediaType", "term", "rawPayload", "coverEvidence"] }, detail: `Android Driver + 小红书字段清单 Playbook + 真实截图封面；评论 Bot ${commentBot === "configured" ? "已配置" : commentBot === "invalid" ? "地址无效" : "未配置"}；Publisher API ${publisher === "configured" ? "已配置" : publisher === "invalid" ? "地址无效" : "未配置"}` }; },
   discover: async (accountId, terms, deviceId) => discoverXiaohongshu(accountId, terms, deviceId),
+  captureCover: async (accountId, post, deviceId) => captureXiaohongshuCover(accountId, post, deviceId),
   collectComments: async (accountId, post, limit) => {
     const baseUrl = normalizeLoopbackServiceBaseUrl(process.env.XIAOHONGSHU_COMMENT_BOT_BASE_URL, "XIAOHONGSHU_COMMENT_BOT_BASE_URL");
     if (!baseUrl) throw new Error("小红书评论 Bot 尚未配置");
