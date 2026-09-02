@@ -77,7 +77,7 @@
     "@vitejs/plugin-react": "^6.0.4",
     "appium": "^3.7.0",
     "appium-uiautomator2-driver": "^8.5.0",
-    "oxlint": "^1.75.0",
+    "oxlint": "^1.80.0",
     "prisma": "^6.19.0",
     "typescript": "~6.0.2",
     "vite": "^8.2.0"
