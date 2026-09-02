@@ -24,7 +24,7 @@ export function OverviewPage() {
     <div className="kpi-grid">
       <div className="kpi"><div className="kpi-label">监控话题</div><div className="kpi-value">{currentTopics.length}</div><div className="kpi-foot"><span className="delta-up">{currentTopics.filter((topic) => topic.state === "running").length} 个运行中</span> · 服务端配置</div></div>
       <div className="kpi"><div className="kpi-label">项目帖子</div><div className="kpi-value">{sourcePosts.length}</div><div className="kpi-foot">Control API 查询结果</div></div>
-      <div className="kpi"><div className="kpi-label">待终审选题</div><div className="kpi-value">{pendingIdeas}</div><div className="kpi-foot">来源爆帖必须先人工通过</div></div>
+      <div className="kpi"><div className="kpi-label">待终审选题</div><div className="kpi-value">{pendingIdeas}</div><div className="kpi-foot">人工审核从选题层开始</div></div>
       <div className="kpi"><div className="kpi-label">待发布内容</div><div className="kpi-value">{pendingDrafts}</div><div className="kpi-foot">PublicationDraft</div></div>
     </div>
     <div className="dashboard-grid">

@@ -19,7 +19,9 @@
 
 ### 当前支持
 
-- **小红书：**内置 Android Phone Adapter，负责真实搜索、候选采集、分享链接解析与证据保存。
+- **小红书：**内置混合 Adapter。配置本地 `xiaohongshu-mcp` 后优先用结构化 MCP 搜索与取详情；
+  MCP 超时、登录/验证码/风控异常、字段合同不完整，或所有候选都没通过当前赞数、评论数和评分
+  硬门槛时，自动回退到现有 Android Phone Adapter。未配置 MCP 时直接使用手机视觉链路。
 - **TikTok：**内置 Android Phone Adapter，负责真实搜索与证据采集；当前复制分享链接路径会在
   声明的能力上使用智谱 AutoGLM-Phone 回退。
 
@@ -173,6 +175,26 @@ npm run health
 `XIAOHONGSHU_PUBLISHER_BASE_URL` 和可选的 `XIAOHONGSHU_PUBLISHER_KEY`。服务必须实现
 [Publisher API 合同](docs/xiaohongshu-publisher-contract.zh-CN.md)；未配置不会影响抓取、分析或草稿审核。
 
+如需启用小红书 MCP 主抓取，在本机启动可信的
+[xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp)，并在 `.env` 设置：
+
+```dotenv
+XIAOHONGSHU_MCP_BASE_URL=http://127.0.0.1:18060
+XIAOHONGSHU_MCP_ACCOUNT_ID=<Dashboard 中已确认身份的小红书账号 UUID>
+XIAOHONGSHU_MCP_TOKEN=
+XIAOHONGSHU_MCP_TIMEOUT_MS=70000
+XIAOHONGSHU_MCP_COOKIES_PATH=./data/runtime/xiaohongshu-mcp/cookies.json
+XIAOHONGSHU_MCP_LOGIN_PROFILE_DIR=./data/browser-profiles/xiaohongshu-mcp-login
+XIAOHONGSHU_MCP_EXPECTED_DISPLAY_NAME=<已确认账号昵称>
+```
+
+服务必须只绑定回环地址，且扫码账号必须与 `XIAOHONGSHU_MCP_ACCOUNT_ID` 对应的已确认账号一致；
+缺少显式绑定或运行规则选择了不同账号时，MCP 会 fail closed 并使用手机回退。不要使用上游独立登录器的
+临时 Chromium 页面；执行 `npm run xhs:mcp:login`，由项目使用真实 Google Chrome 的专用持久 Profile
+完成扫码、账号昵称验证并把小红书 Cookie 写入 MCP 实际读取的同一路径。随后执行
+`npm run xhs:mcp:doctor` 验证 MCP 可达和登录有效；仅扫码或点击登录不算成功。即使 MCP 已启用，仍需保持
+`npm run phone:doctor:json` 为 Ready，才能保证验证码、风控、超时或低质量结果出现时可自动回退。
+
 ## Phone Doctor 状态
 
 `npm run phone:doctor:json` 是机器可读安装状态的唯一依据。它会区分：
@@ -196,6 +218,8 @@ npm run health
 | `npm run phone:install` | 安装/验证仓库本地 Android Platform Tools、Temurin JDK 17、Appium 与 UiAutomator2 依赖。 |
 | `npm run phone:doctor` | 输出便于人工阅读的完整 Phone 诊断。 |
 | `npm run phone:doctor:json` | 输出供 Codex 或其他 Agent 使用的结构化报告。退出码 2 表示安装尚未完成。 |
+| `npm run xhs:mcp:login` | 用真实 Google Chrome 专用 Profile 登录小红书，验证账号后保存到 MCP 的显式 Cookie 路径。 |
+| `npm run xhs:mcp:doctor:json` | 验证小红书 MCP 回环服务可达且实际识别为已登录。 |
 | `npm start` | 启动或复用 PostgreSQL、启动或复用 Appium，并在本地提供 Dashboard 与 Control API。 |
 | `npm run health` | 验证配置端口上的 Control API 与数据库。 |
 | `npm run check` | 执行隐私扫描、Lint、单元测试、Build 与高危依赖审计。 |

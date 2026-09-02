@@ -9,44 +9,44 @@ export const projects: ProjectRecord[] = [
 
 export const initialSourcePosts: SourcePost[] = [
   {
-    id: "post-01", platform: "TikTok", author: "@smallstudio", title: "失败画面先出现，3 秒后才揭示真正的核心机制",
+    id: "post-01", platform: "TikTok", author: "@smallstudio", title: "失败画面先出现，3 秒后才揭示真正的核心机制", body: "",
     topic: "#indiedev", published: "2 小时前", likes: 18400, comments: 612, score: 94,
     reason: "互动速度位于话题前 2%，评论集中讨论核心机制", mediaType: "视频",
-    image: "https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=720&q=80", action: "unreviewed", reviewState: "pending",
-    canonicalUrl: "https://www.tiktok.com/@smallstudio/video/demo-post-01", externalId: "tt-demo-001", capturedAt: "今天 10:04",
+    image: "https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=720&q=80",
+    canonicalUrl: "https://www.tiktok.com/@smallstudio/video/demo-post-01", sourceLink: { usable: true }, externalId: "tt-demo-001", capturedAt: "今天 10:04",
     evidence: { signals: ["互动速度位于话题前 2%", "评论集中讨论核心机制"], scoreBreakdown: [{ label: "互动速度", value: "94" }, { label: "话题相关度", value: "92" }, { label: "可复刻结构", value: "96" }], capturedBy: "tiktok.discovery.demo", capturedAt: "今天 10:04" },
     patternCard: { summary: "用误解与揭示制造认知反差。", viralReasons: [{ claim: "前 3 秒留下信息缺口", evidence: ["先展示失败结果，再解释机制"], confidence: "medium" }], production: { mediaType: "video", hook: "先展示失败结果，再延迟揭示真正机制", structure: ["失败结果", "留白", "机制解释", "结果回收"], videoMethod: ["前 3 秒快切", "后段单镜头解释"], writingMethod: ["先提出误解，再给出机制证据"], imageTypes: ["项目 UI 截图", "时间轴字幕"] }, replicationDecision: { verdict: "adapt", reason: "结构可迁移，但角色与 UI 必须替换为项目资产。", portableElements: ["认知反差", "延迟揭示"], mustReplace: ["角色素材", "UI 截图", "字幕文案"] }, topicCandidates: [], insights: [], limitations: ["演示数据，不代表真实平台证据"] },
   },
   {
-    id: "post-02", platform: "Reddit", author: "u/turnbased_dev", title: "开发日志：只改了命中反馈，玩家却认为整个战斗系统重做了",
+    id: "post-02", platform: "Reddit", author: "u/turnbased_dev", title: "开发日志：只改了命中反馈，玩家却认为整个战斗系统重做了", body: "",
     topic: "r/IndieDev", published: "5 小时前", likes: 3260, comments: 188, score: 89,
     reason: "作者基线提升 4.7 倍，长评论比例明显高于社区中位数", mediaType: "图文",
-    image: "https://images.unsplash.com/photo-1552820728-8b83bb6b773f?auto=format&fit=crop&w=720&q=80", action: "unreviewed", reviewState: "pending",
-    canonicalUrl: "https://www.reddit.com/r/IndieDev/comments/demo-post-02", externalId: "reddit-demo-002", capturedAt: "今天 09:16",
+    image: "https://images.unsplash.com/photo-1552820728-8b83bb6b773f?auto=format&fit=crop&w=720&q=80",
+    canonicalUrl: "https://www.reddit.com/r/IndieDev/comments/demo-post-02", sourceLink: { usable: true }, externalId: "reddit-demo-002", capturedAt: "今天 09:16",
     evidence: { signals: ["作者基线提升 4.7 倍", "长评论比例高于社区中位数"], scoreBreakdown: [{ label: "作者基线", value: "89" }, { label: "评论深度", value: "91" }, { label: "项目匹配", value: "87" }], capturedBy: "reddit.discovery.demo", capturedAt: "今天 09:16" },
   },
   {
-    id: "post-03", platform: "小红书", author: "像素工坊", title: "独立游戏最容易被忽略的不是美术，而是第一屏的信息密度",
+    id: "post-03", platform: "小红书", author: "像素工坊", title: "独立游戏最容易被忽略的不是美术，而是第一屏的信息密度", body: "",
     topic: "#独立游戏开发", published: "昨天", likes: 8920, comments: 376, score: 86,
     reason: "收藏评论比高，适合拆解成信息设计类图文", mediaType: "图文",
-    image: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=720&q=80", action: "unreviewed", reviewState: "pending",
-    canonicalUrl: "https://www.xiaohongshu.com/explore/demo-post-03", externalId: "xhs-demo-003", capturedAt: "昨天 18:40",
+    image: "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=720&q=80",
+    canonicalUrl: "https://www.xiaohongshu.com/explore/demo-post-03", sourceLink: { usable: false, reason: "演示记录没有真实平台访问凭证。" }, externalId: "xhs-demo-003", capturedAt: "昨天 18:40",
     evidence: { signals: ["收藏评论比高", "适合拆解成信息设计图文"], scoreBreakdown: [{ label: "收藏效率", value: "88" }, { label: "图文结构", value: "90" }, { label: "项目匹配", value: "83" }], capturedBy: "xhs.discovery.demo", capturedAt: "昨天 18:40" },
   },
   {
-    id: "post-04", platform: "X", author: "@buildinpublic", title: "A one-line UI change doubled demo wishlists overnight",
+    id: "post-04", platform: "X", author: "@buildinpublic", title: "A one-line UI change doubled demo wishlists overnight", body: "",
     topic: "indie game UI", published: "8 小时前", likes: 4720, comments: 91, score: 81,
     reason: "短文本高转发，适合评论互动或转成小红书案例卡片", mediaType: "文本",
-    image: "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=720&q=80", action: "unreviewed", reviewState: "pending",
-    canonicalUrl: "https://x.com/buildinpublic/status/demo-post-04", externalId: "x-demo-004", capturedAt: "今天 07:58",
+    image: "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?auto=format&fit=crop&w=720&q=80",
+    canonicalUrl: "https://x.com/buildinpublic/status/demo-post-04", sourceLink: { usable: true }, externalId: "x-demo-004", capturedAt: "今天 07:58",
     evidence: { signals: ["短文本高转发", "适合评论互动或案例卡片"], scoreBreakdown: [{ label: "传播速度", value: "82" }, { label: "可讨论性", value: "84" }, { label: "项目匹配", value: "78" }], capturedBy: "x.discovery.demo", capturedAt: "今天 07:58" },
   },
   {
-    id: "post-05", platform: "抖音", author: "游戏制作日记", title: "把角色攻击前摇放大三倍，观众终于看懂发生了什么",
+    id: "post-05", platform: "抖音", author: "游戏制作日记", title: "把角色攻击前摇放大三倍，观众终于看懂发生了什么", body: "",
     topic: "#游戏开发", published: "4 小时前", likes: 23600, comments: 1048, score: 91,
     reason: "同话题小时互动速度第一，前两秒视觉变化明确", mediaType: "视频",
-    image: "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=720&q=80", action: "adapt", reviewState: "approved",
-    canonicalUrl: "https://www.douyin.com/video/demo-post-05", externalId: "dy-demo-005", capturedAt: "今天 08:22",
+    image: "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=720&q=80",
+    canonicalUrl: "https://www.douyin.com/video/demo-post-05", sourceLink: { usable: true }, externalId: "dy-demo-005", capturedAt: "今天 08:22",
     evidence: { signals: ["同话题小时互动速度第一", "前两秒视觉变化明确"], scoreBreakdown: [{ label: "互动速度", value: "93" }, { label: "前两秒钩子", value: "96" }, { label: "可替换素材", value: "90" }], capturedBy: "douyin.discovery.demo", capturedAt: "今天 08:22" },
     patternCard: { summary: "用高辨识度的前后对比降低理解成本。", viralReasons: [{ claim: "视觉变化在两秒内可被识别", evidence: ["原始片段与放大变化直接对照"], confidence: "medium" }], production: { mediaType: "video", hook: "把变化放大到观众第一眼就能看懂", structure: ["原始片段", "放大变化", "前后对比", "结论"], videoMethod: ["两秒内完成一次明显变化", "同场景对齐比较"], writingMethod: ["用问题收束对比结论"], imageTypes: ["前后对比帧", "差异标注"] }, replicationDecision: { verdict: "adapt", reason: "对比方式可迁移，具体游戏画面必须使用项目素材。", portableElements: ["前后对比", "两秒视觉钩子"], mustReplace: ["角色动画", "命中特效", "对比字幕"] }, topicCandidates: [], insights: [], limitations: ["演示数据，不代表真实平台证据"] },
   },
@@ -79,7 +79,7 @@ export const trendData = [
   { day: "今天", captured: 94, qualified: 21 },
 ];
 
-const topicAnomalyDefaults = { searchMode: "sequential", anomalyEnabled: true, anomalyMethod: "robust_mad", anomalyBaselineDays: 30, anomalyMinSamples: 30, anomalyZThreshold: 3.5 } as const;
+const topicAnomalyDefaults = { searchMode: "sequential", mediaTypeFilter: "any", anomalyEnabled: true, anomalyMethod: "robust_mad", anomalyBaselineDays: 30, anomalyMinSamples: 30, anomalyZThreshold: 3.5 } as const;
 
 export const topics = [
   { ...topicAnomalyDefaults, id: "topic-01", projectId: "atlas", name: "独立游戏开发", platform: "小红书", terms: ["独立游戏", "开发日志", "战斗系统"], excludeTerms: ["招聘", "课程"], posts: 186, qualified: 14, cadence: "每日 09:00", state: "running", minLikes: 2000, minComments: 40, maxAgeHours: 72, minScore: 75, lastRun: "今天 09:00" },

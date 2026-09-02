@@ -3,8 +3,7 @@ export type KnownPlatform = "TikTok" | "小红书" | "Reddit" | "X" | "抖音" |
 export type Platform = KnownPlatform | (string & {});
 export type MediaType = "视频" | "图文" | "文本";
 export type IdeaFormat = "视频" | "图文" | "评论" | "纯文本";
-export type ReviewAction = "unreviewed" | "engage" | "adapt" | "ignored";
-export type SourceReviewState = "pending" | "approved" | "rejected";
+export type ReviewStatus = "pending" | "approved" | "rejected";
 export type IdeaStatus = "candidate" | "approved" | "rejected";
 export type AssetMatchState = "pending" | "matched" | "needs_generation" | "not_applicable";
 export type InsightKind = "inspiration" | "pain_point" | "feedback";
@@ -46,6 +45,7 @@ export interface TopicWatch {
   terms: string[];
   excludeTerms: string[];
   searchMode: TopicSearchMode;
+  mediaTypeFilter: "any" | "video" | "image_text";
   cadence: string;
   state: "running" | "paused";
   minLikes: number;
@@ -70,6 +70,7 @@ export interface TopicWatchInput {
   terms: string[];
   excludeTerms: string[];
   searchMode: TopicSearchMode;
+  mediaTypeFilter: "any" | "video" | "image_text";
   cadence: string;
   state: "running" | "paused";
   minLikes: number;
@@ -168,6 +169,7 @@ export interface SourcePost {
   platform: Platform;
   author: string;
   title: string;
+  body: string;
   topic: string;
   published: string;
   likes: number;
@@ -176,9 +178,8 @@ export interface SourcePost {
   reason: string;
   mediaType: MediaType;
   image: string;
-  action: ReviewAction;
-  reviewState: SourceReviewState;
   canonicalUrl: string;
+  sourceLink: { usable: boolean; reason?: string };
   externalId: string;
   capturedAt: string;
   evidence: SourceEvidence;
@@ -251,7 +252,7 @@ export interface InsightRecord {
   detail: string;
   evidenceType: InsightEvidenceType;
   commentIds: string[];
-  status: SourceReviewState;
+  status: ReviewStatus;
   createdBy?: string;
   createdAt: string;
   updatedAt: string;

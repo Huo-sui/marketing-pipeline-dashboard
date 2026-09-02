@@ -1,6 +1,6 @@
 interface:
   display_name: "爆帖选题分析"
   short_description: "结合项目方向、资产和真实评论，拆解爆帖并生成可审核选题"
-  default_prompt: "Use $viral-topic-analysis to analyze approved source posts for this project and save reviewable topics and feedback."
+  default_prompt: "Use $viral-topic-analysis to analyze the project's source posts that currently pass all TopicWatch hard gates, then save reviewable topics and feedback. Source-post approval is not required; human review starts with the generated topics."
 policy:
   allow_implicit_invocation: true

@@ -22,8 +22,11 @@ marketing loop that can eventually run every day:
 
 ### Supported today
 
-- **Xiaohongshu:** a built-in Android Phone Adapter handles real search,
-  candidate capture, share-link resolution, and evidence persistence.
+- **Xiaohongshu:** a hybrid adapter prefers a configured local
+  `xiaohongshu-mcp` service for structured search and detail extraction. It
+  automatically falls back to the existing Android Phone Adapter on timeouts,
+  login/captcha/risk-control failures, incomplete evidence, or when every MCP
+  candidate fails the current likes, comments, and score hard gates.
 - **TikTok:** a built-in Android Phone Adapter handles real search and evidence
   capture. Its current share-link path uses Zhipu AutoGLM-Phone as a fallback
   for the capability that declares that dependency.
@@ -210,6 +213,22 @@ Open [http://127.0.0.1:3210](http://127.0.0.1:3210). If you set
 `MARKETING_PIPELINE_PORT` in `.env`, use that port instead. The service and
 Appium bind to `127.0.0.1`; the bundled PostgreSQL mapping does too. Do not
 expose ports 3210, 4723, or 5432 to a LAN or the public internet.
+
+When a local `xiaohongshu-mcp` binary is configured, use the project login
+bridge instead of the upstream standalone login window:
+
+```powershell
+npm run xhs:mcp:login
+npm run xhs:mcp:doctor:json
+```
+
+The bridge opens the installed Google Chrome with a dedicated persistent
+profile, waits for a real signed-in account, optionally checks
+`XIAOHONGSHU_MCP_EXPECTED_DISPLAY_NAME`, and writes only Xiaohongshu cookies to
+`XIAOHONGSHU_MCP_COOKIES_PATH`. `npm start` passes that exact path to the MCP
+process. A click or scan alone is never reported as success: the doctor must
+confirm both MCP reachability and login state. If it cannot, Discovery keeps
+the Android Phone Adapter as its fallback.
 
 To hand approved drafts to a separately operated Xiaohongshu phone publisher,
 set the loopback-only `XIAOHONGSHU_PUBLISHER_BASE_URL` and optional

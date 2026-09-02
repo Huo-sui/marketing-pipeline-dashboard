@@ -7,6 +7,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import { requestPhoneAgentStep } from "./providers/zhipuAutoGlmProvider.js";
 import { resolveAdbExecutable } from "./mobile/androidToolchain.js";
+import { runDiscoveryStateMachine, type DiscoveryMachineContext, type PlatformDiscoveryPlan, type PlatformDiscoveryRequest } from "./mobile/discoveryStateMachine.js";
+import { TIKTOK_DISCOVERY_POLICY, tiktokExternalIdFromUrl, tiktokMediaTypeFromUrl, tiktokSearchCandidates, type TikTokSearchCandidate } from "./platforms/tiktokDiscoveryPolicy.js";
 
 const execFileAsync = promisify(execFile);
 const TIKTOK_PACKAGE = "com.zhiliaoapp.musically";
@@ -49,8 +51,8 @@ export type TikTokDiscoveryPost = {
   title: string;
   likes: number;
   comments: number;
-  publishedAt?: string;
-  mediaType: "视频";
+  publishedAt: string;
+  mediaType: "视频" | "图文";
   term: string;
   rawPayload: Record<string, unknown>;
   coverEvidence: { bytes: Buffer; mimeType: "image/png"; capturedAt: string; source: "device_screenshot" };
@@ -438,15 +440,11 @@ async function ensureAppiumSession(device: Device) {
   return sessionId;
 }
 
-function tikTokUrlId(url: string) {
-  return url.match(/(?:\/video\/|[?&](?:item_id|aweme_id)=)(\d{8,})/i)?.[1] ?? "";
-}
-
 async function resolveTikTokUrl(rawUrl: string) {
   const trimmed = rawUrl.match(/https?:\/\/[^\s]+/i)?.[0]?.replace(/[),.]+$/, "") ?? "";
   if (!trimmed || !/tiktok\.com/i.test(trimmed)) return null;
   let canonicalUrl = trimmed;
-  let externalId = tikTokUrlId(canonicalUrl);
+  let externalId = tiktokExternalIdFromUrl(canonicalUrl);
   if (!externalId) {
     try {
       const controller = new AbortController();
@@ -454,23 +452,13 @@ async function resolveTikTokUrl(rawUrl: string) {
       const response = await fetch(trimmed, { redirect: "follow", signal: controller.signal });
       clearTimeout(timeout);
       canonicalUrl = response.url || trimmed;
-      externalId = tikTokUrlId(canonicalUrl);
+      externalId = tiktokExternalIdFromUrl(canonicalUrl);
     } catch { /* short links may be inaccessible from this machine */ }
   }
-  // TikTok's mobile share sheet commonly returns vt.tiktok.com short links.
-  // They are real source identities even when this computer cannot follow the
-  // redirect (regional routing, login walls, or transient network policy).
-  if (!externalId) {
-    try {
-      const parsed = new URL(trimmed);
-      if (parsed.hostname.toLowerCase() === "vt.tiktok.com") {
-        const code = parsed.pathname.split("/").filter(Boolean)[0];
-        if (code) externalId = `vt:${code}`;
-      }
-    } catch { /* invalid URL is rejected below */ }
-  }
   if (!externalId) return null;
-  return { canonicalUrl, externalId };
+  const mediaType = tiktokMediaTypeFromUrl(canonicalUrl);
+  if (!mediaType) return null;
+  return { canonicalUrl, externalId, mediaType };
 }
 
 async function waitForTikTokClipboard(device: Device, timeoutMs = 8_000) {
@@ -593,7 +581,7 @@ function uiNodes(xml: string) {
     const text = decodeXml(tag.match(/\btext="([^"]*)"/)?.[1] ?? "");
     const desc = decodeXml(tag.match(/\bcontent-desc="([^"]*)"/)?.[1] ?? "");
     const bounds = tag.match(/\bbounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
-    return { text, desc, bounds: bounds ? { left: Number(bounds[1]), top: Number(bounds[2]), right: Number(bounds[3]), bottom: Number(bounds[4]) } : undefined };
+    return { text, desc, selected: tag.match(/\bselected="([^"]*)"/)?.[1] === "true", checked: tag.match(/\bchecked="([^"]*)"/)?.[1] === "true", bounds: bounds ? { left: Number(bounds[1]), top: Number(bounds[2]), right: Number(bounds[3]), bottom: Number(bounds[4]) } : undefined };
   }).filter((node) => node.text || node.desc);
 }
 
@@ -649,17 +637,17 @@ function parsePublishedAt(xml: string) {
   return undefined;
 }
 
-function parseOpenedPostMetadata(xml: string, term: string) {
+function parseOpenedPostMetadata(xml: string) {
   const nodes = uiNodes(xml);
   const values = nodes.flatMap((node) => [node.text, node.desc]).filter(Boolean);
   const author = values.find((value) => /^@[a-zA-Z0-9._-]{2,64}$/.test(value)) ?? "";
   const title = values
     .filter((value) => value.length >= 4 && !/^\d/.test(value) && !/^[@#]/.test(value) && !/^(赞|评论|分享|Like|Comment|Share)$/i.test(value))
-    .sort((left, right) => right.length - left.length)[0] ?? term;
+    .sort((left, right) => right.length - left.length)[0];
   // Prefer semantic accessibility descriptions. Numeric nodes are duplicated
   // in TikTok's hierarchy, so positional parsing can turn likes into comments.
-  const likes = parseLabeledMetric(xml, /(?:点赞视频|like video)[^\d]*(\d[\d.,]*\s*[万wk]?)/i) ?? 0;
-  const comments = parseLabeledMetric(xml, /(?:评论|comment)[^\d]*(\d[\d.,]*\s*[万wk]?)/i) ?? 0;
+  const likes = parseLabeledMetric(xml, /(?:点赞视频|like video)[^\d]*(\d[\d.,]*\s*[万wk]?)/i);
+  const comments = parseLabeledMetric(xml, /(?:评论|comment)[^\d]*(\d[\d.,]*\s*[万wk]?)/i);
   return { author, title, likes, comments, publishedAt: parsePublishedAt(xml) };
 }
 
@@ -712,146 +700,105 @@ async function selectRecentUploadSort(device: Device) {
   if (!opened) return false;
   await new Promise((resolve) => setTimeout(resolve, 900));
   xml = await dumpUi(device).catch(() => "");
-  const selected = await tapText(device, xml, ["最近上传", "最近发布", "最新", "Latest", "Newest", "Most recent"]);
-  if (selected) await new Promise((resolve) => setTimeout(resolve, 2_000));
-  return selected;
+  const labels = new Set(["最近上传", "最近发布", "最新", "Latest", "Newest", "Most recent"]);
+  const option = uiNodes(xml).find((node) => node.bounds && labels.has(node.text || node.desc));
+  if (!option?.bounds) return false;
+  const centerX = (option.bounds.left + option.bounds.right) / 2;
+  const centerY = (option.bounds.top + option.bounds.bottom) / 2;
+  await adb([...deviceArgs(device.serial), "shell", "input", "tap", String(Math.round(centerX)), String(Math.round(centerY))]);
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  const verified = uiNodes(await dumpUi(device).catch(() => ""))
+    .filter((node) => node.bounds && labels.has(node.text || node.desc))
+    .sort((left, right) => Math.hypot(((left.bounds!.left + left.bounds!.right) / 2) - centerX, ((left.bounds!.top + left.bounds!.bottom) / 2) - centerY) - Math.hypot(((right.bounds!.left + right.bounds!.right) / 2) - centerX, ((right.bounds!.top + right.bounds!.bottom) / 2) - centerY))[0];
+  return Boolean(verified?.selected || verified?.checked);
 }
 
-async function tapFirstSearchCandidate(device: Device) {
-  // Search results are loaded asynchronously and the first UIAutomator dump
-  // can legitimately contain only the search tabs. Poll for a real clickable
-  // video card instead of failing the whole term during that transition.
+async function nextTikTokSearchCandidate(device: Device, visited: Set<string>) {
   const deadline = Date.now() + 18_000;
+  let swipes = 0;
   while (Date.now() < deadline) {
     const xml = await dumpUi(device).catch(() => "");
-    const hasVideoCard = /resource-id="[^"]*v68[^"]*"/i.test(xml);
-    if (/分享视频|Share video/i.test(xml) && !hasVideoCard) {
-      // The card tap can complete while the result list is being replaced by
-      // the detail page. TikTok can keep the search EditText in the same
-      // hierarchy during that transition, so the absence of a result card,
-      // rather than the absence of a search node, is the reliable boundary.
-      return true;
-    }
-    const match = xml.match(/<node\b(?=[^>]*(?:content-desc="[^"]*(?:的视频|video)[^"]*"|resource-id="[^"]*v68[^"]*"))(?=[^>]*clickable="true")(?=[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]")[^>]*>/i);
-    if (match) {
-      const x = Math.round((Number(match[1]) + Number(match[3])) / 2);
-      const y = Math.round((Number(match[2]) + Number(match[4])) / 2);
-      await adb([...deviceArgs(device.serial), "shell", "input", "tap", String(x), String(y)]);
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-      return true;
-    }
-    // Some ColorOS transitions leave ADB's dump file empty while UiAutomator2
-    // still has the live hierarchy. Query the Appium element endpoint as a
-    // second deterministic path before declaring the result list empty.
-    const appiumSession = !xml ? await ensureAppiumSession(device).catch(() => "") : "";
-    if (appiumSession) {
-      try {
-        const response = await fetch(`${appiumBaseUrl}/session/${appiumSession}/element`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ using: "id", value: `${TIKTOK_PACKAGE}:id/v68` }),
-          signal: AbortSignal.timeout(1_500),
-        });
-        if (response.ok) {
-          const payload = await response.json() as { value?: { [key: string]: string } };
-          const elementId = payload.value?.ELEMENT ?? payload.value?.["element-6066-11e4-a52e-4f735466cecf"];
-          if (elementId) {
-            await fetch(`${appiumBaseUrl}/session/${appiumSession}/element/${elementId}/click`, { method: "POST", signal: AbortSignal.timeout(1_500) });
-            await new Promise((resolve) => setTimeout(resolve, 2_500));
-            return true;
-          }
-        }
-      } catch { /* continue polling */ }
+    const cards = tiktokSearchCandidates(xml);
+    const candidate = cards.find((card) => !visited.has(card.fingerprint));
+    if (candidate) return candidate;
+    if (cards.length && swipes < 2) {
+      const size = await screenSize(device).catch(() => ({ width: 1116, height: 2484 }));
+      await adb([...deviceArgs(device.serial), "shell", "input", "swipe", String(Math.round(size.width * 0.5)), String(Math.round(size.height * 0.76)), String(Math.round(size.width * 0.5)), String(Math.round(size.height * 0.28)), "500"]);
+      swipes += 1;
     }
     await new Promise((resolve) => setTimeout(resolve, 900));
   }
-  return false;
+  return undefined;
 }
 
 async function returnToSearchResults(device: Device) {
-  await adb([...deviceArgs(device.serial), "shell", "input", "keyevent", "4"]);
-  const deadline = Date.now() + 12_000;
-  while (Date.now() < deadline) {
-    const xml = await dumpUi(device).catch(() => "");
-    if (/resource-id="[^"]*v68[^"]*"/i.test(xml) && !/分享视频|Share video/i.test(xml)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 700));
+  // Copy-link automation can leave either the share sheet or the detail page
+  // active. Close one layer at a time and verify the actual result grid after
+  // each Back instead of assuming a single key event is sufficient.
+  for (let layer = 0; layer < 3; layer += 1) {
+    await adb([...deviceArgs(device.serial), "shell", "input", "keyevent", "4"]);
+    const deadline = Date.now() + 12_000;
+    while (Date.now() < deadline) {
+      const xml = await dumpUi(device).catch(() => "");
+      if (/resource-id="[^"]*v68[^"]*"/i.test(xml) && !/分享视频|Share video/i.test(xml)) return true;
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
   }
   return false;
 }
 
-export async function discoverTikTok(accountId: string, terms: string[], deviceId?: string): Promise<TikTokDiscoveryResult> {
-  const device = await selectDevice(deviceId);
-  const session = sessions.get(accountId) ?? { state: "idle" as const };
+type TikTokMachinePlatform = {
+  device: Device;
+  seenIds: Set<string>;
+  currentCard?: TikTokSearchCandidate;
+  normalLaunches: number;
+  recoveryLaunches: number;
+};
+
+async function restoreTikTokResults(context: DiscoveryMachineContext<TikTokDiscoveryPost, TikTokMachinePlatform>) {
+  if (await returnToSearchResults(context.platform.device)) return;
+  try {
+    await openSearch(context.platform.device, context.term!);
+    const sortRestored = await selectRecentUploadSort(context.platform.device).catch(() => false);
+    context.log(sortRestored ? "info" : "warn", "results_reanchored", sortRestored ? "TikTok 已重新锚定同一追踪词并确认恢复“最近上传”" : "TikTok 已重新锚定同一追踪词，但未确认可选的“最近上传”", { recoveryRestartedApp: false, sortRestored });
+  } catch {
+    await launchTikTok(context.platform.device);
+    context.platform.recoveryLaunches += 1;
+    await openSearch(context.platform.device, context.term!);
+    const sortRestored = await selectRecentUploadSort(context.platform.device).catch(() => false);
+    context.log("warn", "results_reanchored", sortRestored ? "TikTok 结果页恢复失败后重启 App、重新搜索并确认恢复“最近上传”" : "TikTok 结果页恢复失败后重启 App 并重新搜索；未确认可选的“最近上传”", { recoveryRestartedApp: true, sortRestored });
+  }
+}
+
+function tikTokPlan(): PlatformDiscoveryPlan<TikTokDiscoveryPost, TikTokMachinePlatform> {
+  return {
+    version: TIKTOK_DISCOVERY_POLICY.stateMachineVersion,
+    session: [{ id: "tiktok_session_ready", state: "session_ready", required: true, timeout: 120_000, attempts: 2, async execute(context) { await launchTikTok(context.platform.device); context.platform.normalLaunches += 1; context.log("info", "app_session_started", "TikTok 本次运行正常启动一次", { normalLaunches: context.platform.normalLaunches }); }, recover: async (context) => { context.platform.recoveryLaunches += 1; context.log("warn", "session_recovery", "TikTok 首次启动未就绪，允许一次恢复启动", { recoveryLaunches: context.platform.recoveryLaunches }); } }],
+    term: [
+      { id: "tiktok_term_prepare", state: "term_prepare", required: true, timeout: 3_000, attempts: 1, async execute(context) { context.platform.seenIds = new Set<string>(); } },
+      { id: "tiktok_query_submit", state: "query_submitted", required: true, timeout: 25_000, attempts: 2, async execute(context) { await openSearch(context.platform.device, context.term!); }, recover: async (context) => { await adb([...deviceArgs(context.platform.device.serial), "shell", "input", "keyevent", "4"]); } },
+      { id: "tiktok_results_ready", state: "results_ready", required: true, timeout: 3_000, attempts: 1, async execute(context) { context.log("info", "results_verified", "沿用 TikTok 输入完成后的结果页确认", { verifiedBy: "query_submitted" }); } },
+      { id: TIKTOK_DISCOVERY_POLICY.recentUpload.stepId, state: "filters_apply", required: TIKTOK_DISCOVERY_POLICY.recentUpload.required, timeout: 15_000, attempts: 1, async execute(context) { const selected = await selectRecentUploadSort(context.platform.device); context.log(selected ? "info" : "warn", "sort_selected", selected ? "已切换排序：最近上传" : "未能确认“最近上传”，沿用当前可选失败策略", { requested: "recent_upload", selected }); if (!selected) throw new Error("未确认最近上传"); } },
+      { id: "tiktok_filter_verify", state: "filters_verify", required: false, timeout: 1_000, attempts: 1, async execute() {} },
+    ],
+    candidate: [
+      { id: "tiktok_candidate_scan", state: "candidate_scan", required: true, timeout: 22_000, attempts: 1, async execute(context) { const card = await nextTikTokSearchCandidate(context.platform.device, context.visitedFingerprints); if (!card) throw new Error("TikTok 搜索结果没有更多未访问候选"); context.visitedFingerprints.add(card.fingerprint); context.platform.currentCard = card; context.log("info", "candidate_scanned", `按视觉顺序选择候选 ${context.candidateIndex + 1}`, { candidateIndex: context.candidateIndex, fingerprint: card.fingerprint }); } },
+      { id: "tiktok_candidate_open", state: "candidate_open", required: true, timeout: 30_000, attempts: 1, async execute(context) { const bounds = context.platform.currentCard?.bounds; if (!bounds) throw new Error("TikTok 候选缺少可点击坐标"); await adb([...deviceArgs(context.platform.device.serial), "shell", "input", "tap", String(Math.round((bounds.left + bounds.right) / 2)), String(Math.round((bounds.top + bounds.bottom) / 2))]); await new Promise((resolve) => setTimeout(resolve, 2_500)); const xml = await dumpUi(context.platform.device).catch(() => ""); if (!/分享视频|Share video|评论|Comment/i.test(xml)) throw new Error("TikTok 候选详情页未确认"); }, recover: restoreTikTokResults },
+      { id: "tiktok_candidate_extract", state: "candidate_extract", required: true, timeout: 75_000, attempts: 1, async execute(context) { const xml = await dumpUi(context.platform.device).catch(() => ""); const metadata = parseOpenedPostMetadata(xml); if (!metadata.author || !metadata.title || metadata.likes === undefined || metadata.comments === undefined || !metadata.publishedAt) throw new Error("字段清单未完成：作者、标题、点赞数、评论数或发布时间缺失"); const coverEvidence = { bytes: await screenshot(context.platform.device), mimeType: "image/png" as const, capturedAt: new Date().toISOString(), source: "device_screenshot" as const }; context.log("info", "candidate_read", `读取候选 ${context.candidateIndex + 1}：发布时间 ${metadata.publishedAt}，点赞 ${metadata.likes}，评论 ${metadata.comments}`, { candidate: context.candidateIndex + 1, likes: metadata.likes, comments: metadata.comments, publishedAt: metadata.publishedAt }); const link = await copyPostLinkWithAgent(context.platform.device, context.term!); if (context.platform.seenIds.has(link.externalId)) throw new Error("真实分享链接与已检查候选重复"); const post: TikTokDiscoveryPost = { externalId: link.externalId, canonicalUrl: link.canonicalUrl, author: metadata.author, title: metadata.title, likes: metadata.likes, comments: metadata.comments, publishedAt: metadata.publishedAt, mediaType: link.mediaType, term: context.term!, rawPayload: { source: "autoglm-share-link", term: context.term, candidate: context.candidateIndex + 1, resultFingerprint: context.platform.currentCard?.fingerprint, shareLinkResolved: true, coverEvidence: { source: coverEvidence.source, mimeType: coverEvidence.mimeType, capturedAt: coverEvidence.capturedAt } }, coverEvidence }; context.platform.seenIds.add(link.externalId); context.candidatePost = post; context.log("info", "candidate_captured", `候选 ${context.candidateIndex + 1} 已取得真实分享链接`, { externalId: link.externalId, mediaType: link.mediaType, checklistComplete: true }); }, recover: restoreTikTokResults },
+      { id: "tiktok_candidate_return", state: "candidate_return", required: true, timeout: 180_000, attempts: 1, execute: restoreTikTokResults, recover: restoreTikTokResults },
+    ],
+    termSwitch: [{ id: "tiktok_term_switch", state: "term_switch", required: false, timeout: 15_000, attempts: 1, async execute(context) { context.log("info", "term_switch_ready", "保留 TikTok App 会话并切换下一追踪词", { normalLaunches: context.platform.normalLaunches }); } }],
+    complete: [{ id: "tiktok_run_complete", state: "run_complete", required: false, timeout: 2_000, attempts: 1, async execute(context) { context.log("info", "run_completed", `TikTok 搜索完成：共取得 ${context.posts.length} 条真实分享链接`, { posts: context.posts.length, normalLaunches: context.platform.normalLaunches, recoveryLaunches: context.platform.recoveryLaunches }); } }],
+  };
+}
+
+export async function discoverTikTok(request: PlatformDiscoveryRequest): Promise<TikTokDiscoveryResult> {
+  const device = await selectDevice(request.deviceId);
+  const session = sessions.get(request.accountId) ?? { state: "idle" as const };
   session.deviceId = device.serial;
   session.device = device;
-  sessions.set(accountId, session);
-  const posts: TikTokDiscoveryPost[] = [];
-  const logs: TikTokDiscoveryLog[] = [];
-  const log = (level: TikTokDiscoveryLog["level"], eventType: string, message: string, term?: string, page?: number, payload?: Record<string, unknown>) => logs.push({ timestamp: new Date().toISOString(), level, eventType, message, term, page, payload });
-  const maxCandidatesPerTerm = 8;
-  for (const term of terms) {
-    log("info", "term_started", `开始搜索关键词：${term}`, term, 1);
-    // Reset the app between terms so a share sheet or an opened video from the
-    // previous term cannot leak into the next search.
-    let candidateOpened = false;
-    let searchError: unknown;
-    for (let attempt = 0; attempt < 2 && !candidateOpened; attempt += 1) {
-      try {
-        await launchTikTok(device);
-        await openSearch(device, term);
-        const sorted = await selectRecentUploadSort(device).catch(() => false);
-        log(sorted ? "info" : "warn", "sort_selected", sorted ? "已切换排序：最近上传" : "未能确认“最近上传”，继续读取当前结果", term, 1, { requested: "recent_upload", selected: sorted });
-        candidateOpened = await tapFirstSearchCandidate(device);
-        if (!candidateOpened) throw new Error(`追踪词 ${term} 的 TikTok 搜索结果没有可点击候选`);
-      } catch (error) {
-        searchError = error;
-      }
-    }
-    if (!candidateOpened) {
-      log("error", "search_failed", searchError instanceof Error ? searchError.message : `追踪词 ${term} 的搜索阶段失败`, term, 1);
-      continue;
-    }
-    const seen = new Set<string>();
-    let checkedCandidates = 0;
-    for (let candidate = 1; candidate <= maxCandidatesPerTerm; candidate += 1) {
-      const page = Math.ceil(candidate / 4);
-      checkedCandidates += 1;
-      const xml = await dumpUi(device).catch(() => "");
-      const metadata = parseOpenedPostMetadata(xml, term);
-      const coverEvidence = { bytes: await screenshot(device), mimeType: "image/png" as const, capturedAt: new Date().toISOString(), source: "device_screenshot" as const };
-      log("info", "candidate_read", `读取候选 ${candidate}：${metadata.publishedAt ? `发布时间 ${metadata.publishedAt}` : "未识别发布时间"}，点赞 ${metadata.likes}，评论 ${metadata.comments}`, term, page, { candidate, likes: metadata.likes, comments: metadata.comments, publishedAt: metadata.publishedAt });
-      try {
-        const link = await copyPostLinkWithAgent(device, term);
-        if (!seen.has(link.externalId)) {
-          seen.add(link.externalId);
-          posts.push({ externalId: link.externalId, canonicalUrl: link.canonicalUrl, ...metadata, mediaType: "视频", term, rawPayload: { source: "autoglm-share-link", term, candidate, shareLinkResolved: true, coverEvidence: { source: coverEvidence.source, mimeType: coverEvidence.mimeType, capturedAt: coverEvidence.capturedAt } }, coverEvidence });
-          log("info", "candidate_captured", `候选 ${candidate} 已取得真实分享链接`, term, page, { externalId: link.externalId });
-        } else {
-          log("warn", "duplicate_candidate", `候选 ${candidate} 分享链接重复，继续下一个候选`, term, page);
-        }
-      } catch (error) {
-        log("warn", "candidate_skipped", `候选 ${candidate} 未取得真实分享链接，继续下一个候选：${error instanceof Error ? error.message : "未知错误"}`, term, page);
-      }
-      if (candidate === maxCandidatesPerTerm) break;
-      const returned = await returnToSearchResults(device);
-      if (!returned) {
-        log("warn", "results_return_failed", `候选 ${candidate} 处理后未能返回搜索结果页，结束该关键词并继续下一个关键词`, term, page);
-        break;
-      }
-      const size = await screenSize(device).catch(() => ({ width: 1116, height: 2484 }));
-      await adb([...deviceArgs(device.serial), "shell", "input", "swipe", String(Math.round(size.width * 0.5)), String(Math.round(size.height * 0.76)), String(Math.round(size.width * 0.5)), String(Math.round(size.height * 0.28)), "500"]);
-      await new Promise((resolve) => setTimeout(resolve, 1_800));
-      const nextOpened = await tapFirstSearchCandidate(device);
-      if (!nextOpened) {
-        log("info", "no_more_candidates", `搜索结果页没有更多可点击候选，结束该关键词`, term, Math.ceil((candidate + 1) / 4));
-        break;
-      }
-      log("info", "continue_next", `当前候选处理结束，继续读取下一个候选（${candidate + 1}/${maxCandidatesPerTerm}）`, term, Math.ceil((candidate + 1) / 4));
-    }
-    log("info", "term_completed", `关键词完成：实际检查 ${checkedCandidates} 个候选，累计取得 ${seen.size} 条真实链接`, term, Math.ceil(Math.max(checkedCandidates, 1) / 4), { checked: checkedCandidates, captured: seen.size });
-  }
-  log("info", "run_completed", `TikTok 搜索完成：共取得 ${posts.length} 条真实分享链接`, undefined, undefined, { posts: posts.length });
-  return { posts, logs };
+  sessions.set(request.accountId, session);
+  return runDiscoveryStateMachine({ request, platform: { device, seenIds: new Set<string>(), normalLaunches: 0, recoveryLaunches: 0 }, plan: tikTokPlan() });
 }
 
 async function tapText(device: Device, xml: string, candidates: string[]) {

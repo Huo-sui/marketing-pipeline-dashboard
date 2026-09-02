@@ -1,8 +1,8 @@
 import { Alert, Button, Divider, Drawer, Form, Input, InputNumber, Modal, Select, Switch, Tag, message } from "antd";
 import { CheckCircle2, Pencil, Plus, RefreshCw, Save, XCircle } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PageHeader, Panel, PlatformBadge } from "../components/Shared";
-import { controlApi } from "../services/controlApi";
+import { controlApi, type PlatformAdapterStatus } from "../services/controlApi";
 import { useDemoState } from "../state/demoStateContext";
 import type { Platform, TopicPreflightResult, TopicWatch } from "../types";
 
@@ -13,6 +13,7 @@ type WatchForm = {
   platform: Platform;
   terms: string[];
   excludeTerms: string[];
+  mediaTypeFilter: "any" | "video" | "image_text";
   minLikes: number;
   minComments: number;
   maxAgeHours: number;
@@ -34,12 +35,22 @@ export function TopicRadarPage() {
   const [runningId, setRunningId] = useState<string>();
   const [runningAll, setRunningAll] = useState(false);
   const [preflight, setPreflight] = useState<{ watch: TopicWatch; result: TopicPreflightResult }>();
+  const [adapterStatuses, setAdapterStatuses] = useState<PlatformAdapterStatus[]>([]);
   const [messageApi, contextHolder] = message.useMessage();
   const watches = topicWatches.filter((watch) => watch.projectId === selectedProject);
   const currentProject = projects.find((project) => project.id === selectedProject);
   const anomalyEnabled = Form.useWatch("anomalyEnabled", form);
   const selectedPlatform = Form.useWatch("platform", form) ?? "TikTok";
+  const selectedAdapter = adapterStatuses.find((adapter) => adapter.platform === selectedPlatform);
+  const mediaTypeLabels = { any: "不限", video: "视频", image_text: "图文" } as const;
+  const mediaTypeOptions = (selectedAdapter?.discovery.mediaTypes ?? ["any"]).map((value) => ({ value, label: mediaTypeLabels[value] }));
   const discoveryBindings = accountBindings.filter((binding) => binding.projectId === selectedProject && binding.roles.includes("discovery"));
+  useEffect(() => { void controlApi.platforms().then(setAdapterStatuses).catch(() => setAdapterStatuses([])); }, []);
+  useEffect(() => {
+    if (!selectedAdapter) return;
+    const selectedMediaType = form.getFieldValue("mediaTypeFilter");
+    if (selectedMediaType && !selectedAdapter.discovery.mediaTypes.includes(selectedMediaType)) form.setFieldValue("mediaTypeFilter", "any");
+  }, [form, selectedAdapter, selectedPlatform]);
   const collectorOptions = accounts.filter((account) => account.lifecycleStatus === "active").map((account) => {
     const profile = automationProfiles.find((item) => item.accountId === account.id);
     return {
@@ -57,6 +68,7 @@ export function TopicRadarPage() {
       platform: "小红书",
       terms: ["独立游戏", "游戏开发"],
       excludeTerms: [],
+      mediaTypeFilter: "any",
       minLikes: 10_000,
       minComments: 100,
       maxAgeHours: 72,
@@ -99,6 +111,7 @@ export function TopicRadarPage() {
         terms,
         excludeTerms,
         searchMode: "sequential",
+        mediaTypeFilter: values.mediaTypeFilter,
         cadence: values.cadence,
         state: editing?.state ?? "running",
         minLikes: values.minLikes,
@@ -187,7 +200,7 @@ export function TopicRadarPage() {
         <div className="entity-card-header"><div><PlatformBadge platform={watch.platform} /><h2 className="entity-title" style={{ marginTop: 10 }}>{watch.name}</h2><div className="entity-subtitle">{watch.cadence} · {watch.lastRun ? `上次 ${watch.lastRun}` : "尚未运行"}</div></div><Switch size="small" checked={watch.state === "running"} onChange={(checked) => updateTopicWatch(watch.id, { state: checked ? "running" : "paused" })} /></div>
         <div className="search-sequence">{watch.terms.map((term, index) => <span key={`${term}-${index}`}><b>{index + 1}</b>{term}</span>)}</div>
         {watch.excludeTerms.length > 0 && <div className="topic-tags"><Tag color="red">排除 {watch.excludeTerms.join("、")}</Tag></div>}
-        <div className="rule-thresholds"><span>最低点赞 <strong>{watch.minLikes.toLocaleString()}</strong></span><span>最低评论 <strong>{watch.minComments.toLocaleString()}</strong></span><span>发布时间 <strong>{watch.maxAgeHours}h</strong></span><span>最低评分 <strong>{watch.minScore}</strong></span><span>异常边界 <strong>{watch.anomalyEnabled ? `MAD z ≥ ${watch.anomalyZThreshold}` : "关闭"}</strong></span><span>采集账号 <strong>{account?.handle || account?.label || "未指定"}</strong></span></div>
+        <div className="rule-thresholds"><span>内容类型 <strong>{mediaTypeLabels[watch.mediaTypeFilter]}</strong></span><span>最低点赞 <strong>{watch.minLikes.toLocaleString()}</strong></span><span>最低评论 <strong>{watch.minComments.toLocaleString()}</strong></span><span>发布时间曲线 <strong>{watch.maxAgeHours}h</strong></span><span>最低评分 <strong>{watch.minScore}</strong></span><span>异常边界 <strong>{watch.anomalyEnabled ? `MAD z ≥ ${watch.anomalyZThreshold}` : "关闭"}</strong></span><span>采集账号 <strong>{account?.handle || account?.label || "未指定"}</strong></span></div>
         <div className="entity-stats"><div><div className="entity-stat-value">{watch.posts}</div><div className="entity-stat-label">近 7 日帖子</div></div><div><div className="entity-stat-value">{watch.qualified}</div><div className="entity-stat-label">入选</div></div><div><div className="entity-stat-value">{rate}%</div><div className="entity-stat-label">入选率</div></div></div>
         <div className="card-actions"><Button size="small" icon={<Pencil size={13} />} onClick={() => openEdit(watch)}>编辑规则</Button><Button size="small" loading={checkingId === watch.id} icon={<RefreshCw size={13} />} onClick={() => checkWatch(watch)}>检查运行条件</Button><Button size="small" type="primary" loading={runningId === watch.id} icon={<RefreshCw size={13} />} onClick={() => runWatch(watch)}>运行一次</Button></div>
       </article>;
@@ -199,10 +212,11 @@ export function TopicRadarPage() {
         <div className="form-grid-2"><Form.Item name="platform" label="平台" rules={[{ required: true }]}><Select options={platforms.map((platform) => ({ value: platform, label: platform }))} /></Form.Item><Form.Item name="collectorAccountId" label="采集账号"><Select allowClear placeholder="选择已验证账号" options={collectorOptions} /></Form.Item></div>
         <Form.Item name="terms" label="追踪词（按标签顺序分别搜索）" rules={[{ required: true, message: "至少填写一个追踪词" }]}><Select mode="tags" tokenSeparators={[","]} placeholder="依次输入 reading、book 并按 Enter" /></Form.Item>
         <Form.Item name="excludeTerms" label="排除词"><Select mode="tags" tokenSeparators={[","]} placeholder="可选，输入后按 Enter" /></Form.Item>
+        <Form.Item name="mediaTypeFilter" label="内容类型" rules={[{ required: true }]} extra={selectedAdapter ? `${selectedAdapter.label} · 状态机 ${selectedAdapter.discovery.stateMachineVersion} · 每词检查 ${selectedAdapter.discovery.defaultCandidateLimit} 篇` : "由平台 Adapter 能力决定可选类型"}><Select options={mediaTypeOptions} /></Form.Item>
 
-        <Divider orientation="left" plain>硬阈值</Divider>
-        <div className="form-grid-2"><Form.Item name="minLikes" label="最低点赞" rules={[{ required: true }]}><InputNumber min={0} className="full-width" /></Form.Item><Form.Item name="minComments" label="最低评论" rules={[{ required: true }]}><InputNumber min={0} className="full-width" /></Form.Item></div>
-        <div className="form-grid-2"><Form.Item name="maxAgeHours" label="最大发布时间（小时）" rules={[{ required: true }]}><InputNumber min={1} className="full-width" /></Form.Item><Form.Item name="minScore" label="最低入选评分"><InputNumber min={0} max={100} className="full-width" /></Form.Item></div>
+        <Divider orientation="left" plain>评分曲线与硬门槛</Divider>
+        <div className="form-grid-2"><Form.Item name="minLikes" label="最低点赞（硬门槛）" rules={[{ required: true }]}><InputNumber min={0} className="full-width" /></Form.Item><Form.Item name="minComments" label="最低评论（硬门槛）" rules={[{ required: true }]}><InputNumber min={0} className="full-width" /></Form.Item></div>
+        <div className="form-grid-2"><Form.Item name="maxAgeHours" label="发布时间曲线（小时）" extra="只校准评分，不是独立入选门槛" rules={[{ required: true }]}><InputNumber min={1} className="full-width" /></Form.Item><Form.Item name="minScore" label="最低评分（硬门槛）"><InputNumber min={0} max={100} className="full-width" /></Form.Item></div>
 
         <Divider orientation="left" plain>数据异常</Divider>
         <Form.Item name="anomalyEnabled" label="启用相对异常判定" valuePropName="checked"><Switch /></Form.Item>

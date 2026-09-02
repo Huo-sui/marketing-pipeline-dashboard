@@ -160,6 +160,7 @@ export function ProjectSetupPage() {
         terms: rule.terms,
         excludeTerms: rule.excludeTerms ?? [],
         searchMode: "sequential",
+        mediaTypeFilter: "any",
         cadence: rule.cadence,
         state: rule.enabled ? "running" : "paused",
         minLikes: rule.minLikes,
@@ -231,10 +232,10 @@ export function ProjectSetupPage() {
             <Form.Item name={[field.name, "terms"]} label="追踪词（按标签顺序分别搜索）" rules={[{ required: true, message: "至少填写一个追踪词" }]}><Select mode="tags" tokenSeparators={[","]} placeholder="输入后按 Enter，例如 reading、book" /></Form.Item>
             <Form.Item name={[field.name, "excludeTerms"]} label="排除词"><Select mode="tags" tokenSeparators={[","]} placeholder="可选，例如 招聘、课程、广告" /></Form.Item>
             <div className="setup-threshold-grid">
-              <Form.Item name={[field.name, "minLikes"]} label="最低点赞" rules={[{ required: true }]}><InputNumber min={0} className="full-width" /></Form.Item>
-              <Form.Item name={[field.name, "minComments"]} label="最低评论" rules={[{ required: true }]}><InputNumber min={0} className="full-width" /></Form.Item>
+              <Form.Item name={[field.name, "minLikes"]} label="最低点赞（硬门槛）" rules={[{ required: true }]}><InputNumber min={0} className="full-width" /></Form.Item>
+              <Form.Item name={[field.name, "minComments"]} label="最低评论（硬门槛）" rules={[{ required: true }]}><InputNumber min={0} className="full-width" /></Form.Item>
               <Form.Item name={[field.name, "maxAgeHours"]} label="时间窗口（小时）" rules={[{ required: true }]}><InputNumber min={1} className="full-width" /></Form.Item>
-              <Form.Item name={[field.name, "minScore"]} label="最低评分" rules={[{ required: true }]}><InputNumber min={0} max={100} className="full-width" /></Form.Item>
+              <Form.Item name={[field.name, "minScore"]} label="最低评分（硬门槛）" rules={[{ required: true }]}><InputNumber min={0} max={100} className="full-width" /></Form.Item>
             </div>
             <div className="setup-anomaly-grid">
               <Form.Item name={[field.name, "anomalyEnabled"]} label="相对异常判定" valuePropName="checked"><Switch /></Form.Item>

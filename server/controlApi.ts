@@ -4,12 +4,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import type { Plugin } from "vite";
 import { Prisma } from "@prisma/client";
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient, TopicWatch } from "@prisma/client";
 import { checkDatabase, DatabaseUnavailableError, getPrismaClient } from "./db/client.js";
 import { ensureWorkspace, workspaceSnapshot } from "./db/repositories/workspaceRepository.js";
 import { AutoGlmProviderError, autoGlmProviderStatus, testAutoGlmProvider } from "./providers/zhipuAutoGlmProvider.js";
-import { emptyPlatformDiscovery, getPlatformAdapter, listPlatformAdapters, platformAdapterStatus } from "./platforms.js";
+import { emptyPlatformDiscovery, getPlatformAdapter, listPlatformAdapters, platformAdapterStatus, type DiscoveryMediaTypeFilter, type PlatformDiscoveryResult } from "./platforms.js";
 import { engagementAgeBucket, scorePositiveEngagementOutlier } from "./scoring/robustAnomaly.js";
+import { evaluateViralAdmission, viralAdmissionPassedMessage, viralAdmissionReasons } from "./scoring/viralAdmission.js";
 import { scoreViralPost, type ViralScoreResult } from "./scoring/viralScore.js";
 import { LocalArtifactStorage, ArtifactStorageError, validateArtifactName } from "./storage/LocalArtifactStorage.js";
 import { numberInput, objectInput, optionalString, requiredString, stringArray, uuidParam, ValidationError } from "./validation/input.js";
@@ -17,6 +18,9 @@ import { createInsight, getSourceAnalysisContext, listInsights, patchInsight, sa
 import { createContentDraft, listContentDrafts, patchContentDraft, reviewContentDraft } from "./workflows/contentDraftWorkflow.js";
 import { approvePublicationDraft, executePublicationDraft } from "./workflows/publicationWorkflow.js";
 import { validateAnalysisPayload } from "./workflows/viralAnalysisContract.js";
+import { allIdeaSourcesCurrentlyAdmitted } from "./workflows/ideaSourceEligibility.js";
+import { discoveryPolicy, parseMediaTypeFilter, supportsMediaType } from "./platforms/discoveryPolicy.js";
+import { runDiscoveryWithFallback } from "./platforms/discoveryFallback.js";
 
 const BASE = "/api/v1";
 const storage = new LocalArtifactStorage();
@@ -108,15 +112,19 @@ function mapProject(project: { id: string; name: string; type: string; stage: st
 function normalizeTopic(input: Record<string, unknown>) {
   const terms = stringArray(input.terms ?? [], "terms");
   if (!terms.length) throw new ValidationError("追踪规则至少需要一个追踪词");
+  const platform = requiredString(input.platform, "platform", 50);
+  const mediaTypeFilter = normalizeMediaTypeFilter(input.mediaTypeFilter);
+  if (!supportsMediaType(platformAdapterStatus(platform).discovery.mediaTypes, mediaTypeFilter)) throw new ValidationError(`${platform} Adapter 不支持内容类型 ${mediaTypeFilter}`);
   const bindingId = typeof input.collectorAccountBindingId === "string" && input.collectorAccountBindingId.trim()
     ? uuidParam(input.collectorAccountBindingId, "collectorAccountBindingId")
     : undefined;
   return {
     name: requiredString(input.name, "name", 200),
-    platform: requiredString(input.platform, "platform", 50),
+    platform,
     terms,
     excludeTerms: stringArray(input.excludeTerms ?? [], "excludeTerms"),
     searchMode: input.searchMode === "sequential" ? "sequential" : "sequential",
+    mediaTypeFilter,
     cadence: requiredString(input.cadence, "cadence", 100),
     state: input.state === "paused" ? "paused" : "running",
     minLikes: numberInput(input.minLikes, "minLikes", 0),
@@ -129,6 +137,43 @@ function normalizeTopic(input: Record<string, unknown>) {
     anomalyMinSamples: numberInput(input.anomalyMinSamples, "anomalyMinSamples", 30, 10, 10_000),
     anomalyZThreshold: numberInput(input.anomalyZThreshold, "anomalyZThreshold", 3.5, 1, 10),
     collectorAccountBindingId: bindingId,
+  };
+}
+
+function normalizeMediaTypeFilter(value: unknown, fallback: DiscoveryMediaTypeFilter = "any"): DiscoveryMediaTypeFilter {
+  const parsed = parseMediaTypeFilter(value, fallback);
+  if (parsed) return parsed;
+  throw new ValidationError("mediaTypeFilter 必须是 any、video 或 image_text");
+}
+
+export function topicConfigSnapshot(current: TopicWatch, input: Record<string, unknown>) {
+  if (input.platform !== undefined && input.platform !== current.platform) throw new ValidationError("Topic Watch 版本不能更换平台");
+  const mediaTypeFilter = normalizeMediaTypeFilter(input.mediaTypeFilter, current.mediaTypeFilter as DiscoveryMediaTypeFilter);
+  if (!supportsMediaType(platformAdapterStatus(current.platform).discovery.mediaTypes, mediaTypeFilter)) throw new ValidationError(`${current.platform} Adapter 不支持内容类型 ${mediaTypeFilter}`);
+  const collectorAccountBindingId = input.collectorAccountBindingId === undefined
+    ? current.collectorAccountBindingId
+    : typeof input.collectorAccountBindingId === "string" && input.collectorAccountBindingId.trim()
+      ? uuidParam(input.collectorAccountBindingId, "collectorAccountBindingId")
+      : null;
+  return {
+    platform: current.platform,
+    name: input.name === undefined ? current.name : requiredString(input.name, "name"),
+    state: input.state === "paused" ? "paused" : input.state === "running" ? "running" : current.state,
+    terms: input.terms === undefined ? current.terms : stringArray(input.terms, "terms"),
+    excludeTerms: input.excludeTerms === undefined ? current.excludeTerms : stringArray(input.excludeTerms, "excludeTerms"),
+    searchMode: input.searchMode === undefined ? current.searchMode : "sequential",
+    mediaTypeFilter,
+    minLikes: numberInput(input.minLikes, "minLikes", current.minLikes),
+    minComments: numberInput(input.minComments, "minComments", current.minComments),
+    maxAgeHours: numberInput(input.maxAgeHours, "maxAgeHours", current.maxAgeHours, 1),
+    minScore: numberInput(input.minScore, "minScore", current.minScore, 0, 100),
+    anomalyEnabled: input.anomalyEnabled === undefined ? current.anomalyEnabled : input.anomalyEnabled !== false,
+    anomalyMethod: input.anomalyMethod === undefined ? current.anomalyMethod : "robust_mad",
+    anomalyBaselineDays: numberInput(input.anomalyBaselineDays, "anomalyBaselineDays", current.anomalyBaselineDays, 7, 365),
+    anomalyMinSamples: numberInput(input.anomalyMinSamples, "anomalyMinSamples", current.anomalyMinSamples, 10, 10_000),
+    anomalyZThreshold: numberInput(input.anomalyZThreshold, "anomalyZThreshold", current.anomalyZThreshold, 1, 10),
+    collectorAccountBindingId,
+    cadence: input.cadence === undefined ? current.cadence : requiredString(input.cadence, "cadence"),
   };
 }
 
@@ -146,6 +191,7 @@ async function topicPreflight(topicWatchId: string) {
   const checks = [
     { key: "platform", label: "平台", ok: adapter.configured && adapter.capabilities.discovery, detail: adapter.detail },
     { key: "terms", label: "追踪词", ok: topic.terms.length > 0, detail: topic.terms.length ? `将按顺序搜索 ${topic.terms.join(" → ")}` : "没有可执行的追踪词" },
+    { key: "media_type", label: "内容类型", ok: adapter.discovery.mediaTypes.includes(topic.mediaTypeFilter as DiscoveryMediaTypeFilter), detail: adapter.discovery.mediaTypes.includes(topic.mediaTypeFilter as DiscoveryMediaTypeFilter) ? `当前规则：${topic.mediaTypeFilter}` : `${adapter.label} 不支持 ${topic.mediaTypeFilter}` },
     { key: "provider", label: "视觉 Provider", ok: !requirements.visualProvider || provider.configured, detail: !requirements.visualProvider ? "当前 Adapter 使用确定性 UI Playbook，不要求视觉 Provider" : provider.configured ? `${provider.label} · ${provider.model}` : "服务端未配置 ZHIPU_API_KEY" },
     { key: "binding", label: "采集账号", ok: !requirements.accountBinding || Boolean(binding && binding.roles.includes("discovery")), detail: !requirements.accountBinding ? "当前 Adapter 不要求账号绑定" : binding ? (binding.roles.includes("discovery") ? "已绑定 Discovery 账号" : "所选账号没有 Discovery 角色") : "规则尚未指定采集账号" },
     { key: "identity", label: "账号身份", ok: !requirements.confirmedIdentity || Boolean(account && account.platform === topic.platform && account.identityConfirmedAt), detail: !requirements.confirmedIdentity ? "当前 Adapter 不要求确认账号身份" : account ? (account.platform !== topic.platform ? `账号平台为 ${account.platform}` : account.identityConfirmedAt ? `${account.displayName || account.handle || account.label} 已确认` : "账号身份尚未确认") : "未找到有效账号" },
@@ -167,7 +213,7 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
   const runner = account ? await db.accountRunner.findFirst({ where: { accountId: account.id, workspaceId: workspace.id } }) : null;
   let discovery = emptyPlatformDiscovery();
   let discovered = discovery.posts;
-  const scoreByExternalId = new Map<string, ViralScoreResult>();
+  let scoreByExternalId = new Map<string, ViralScoreResult>();
   let errorCode = failedCheck ? `PREFLIGHT_${failedCheck.key.toUpperCase()}` : "";
   let errorMessage = failedCheck ? `${failedCheck.label}未就绪：${failedCheck.detail}` : "";
   if (!failedCheck) {
@@ -175,36 +221,62 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
       const adapter = getPlatformAdapter(topic.platform);
       if (!adapter) throw new Error(`${topic.platform} 平台 Adapter 未注册`);
       const adapterStatus = adapter.status();
-      discovery = await adapter.discover(account?.id ?? "api", topic.terms, runner?.deviceId ?? undefined);
-      for (const post of discovery.posts) {
-        const missing = adapterStatus.extraction.requiredFields.filter((field) => {
-          const value = post[field];
-          if (field === "likes" || field === "comments") return typeof value !== "number" || !Number.isFinite(value) || value < 0;
-          if (field === "rawPayload") return !value || typeof value !== "object" || Array.isArray(value);
-          if (field === "coverEvidence") return !value || typeof value !== "object" || Array.isArray(value) || !Buffer.isBuffer(value.bytes) || value.bytes.length === 0 || typeof value.mimeType !== "string" || !["image/png", "image/jpeg", "image/webp"].includes(value.mimeType) || typeof value.capturedAt !== "string" || Number.isNaN(new Date(value.capturedAt).getTime());
-          if (field === "publishedAt") return typeof value !== "string" || !value.trim() || Number.isNaN(new Date(value).getTime());
-          return typeof value !== "string" || !value.trim();
+      const discoveryRequest = { accountId: account?.id ?? "api", deviceId: runner?.deviceId ?? undefined, traceId, terms: topic.terms, policy: discoveryPolicy(topic.mediaTypeFilter as DiscoveryMediaTypeFilter) };
+      type Qualification = { posts: PlatformDiscoveryResult["posts"]; logs: PlatformDiscoveryResult["logs"]; scores: Map<string, ViralScoreResult> };
+      const qualifyDiscovery = (candidateDiscovery: PlatformDiscoveryResult): Qualification => {
+        for (const post of candidateDiscovery.posts) {
+          const missing = adapterStatus.extraction.requiredFields.filter((field) => {
+            const value = post[field];
+            if (field === "likes" || field === "comments") return typeof value !== "number" || !Number.isFinite(value) || value < 0;
+            if (field === "rawPayload") return !value || typeof value !== "object" || Array.isArray(value);
+            if (field === "coverEvidence") return !value || typeof value !== "object" || Array.isArray(value) || !Buffer.isBuffer(value.bytes) || value.bytes.length === 0 || typeof value.mimeType !== "string" || !["image/png", "image/jpeg", "image/webp"].includes(value.mimeType) || typeof value.capturedAt !== "string" || Number.isNaN(new Date(value.capturedAt).getTime());
+            if (field === "publishedAt") return typeof value !== "string" || !value.trim() || Number.isNaN(new Date(value).getTime());
+            return typeof value !== "string" || !value.trim();
+          });
+          if (missing.length) throw new Error(`${topic.platform} Adapter 违反采集字段合同：${post.externalId || "未知候选"} 缺少 ${missing.join("、")}`);
+        }
+        const excludes = topic.excludeTerms.map((term) => term.trim().toLocaleLowerCase()).filter(Boolean);
+        const scoringCapturedAt = new Date();
+        const scores = new Map<string, ViralScoreResult>();
+        const qualificationItems = candidateDiscovery.posts.map((post) => {
+          const reasons: string[] = [];
+          const searchable = `${post.title}\n${post.body ?? ""}\n${post.author}\n${post.term}`.toLocaleLowerCase();
+          const matchedExclude = excludes.find((term) => searchable.includes(term));
+          if (matchedExclude) reasons.push(`命中排除词：${matchedExclude}`);
+          if (topic.mediaTypeFilter === "video" && post.mediaType !== "视频") reasons.push("不符合视频内容类型");
+          if (topic.mediaTypeFilter === "image_text" && post.mediaType !== "图文") reasons.push("不符合图文内容类型");
+          const scoring = scoreViralPost({ likes: post.likes, comments: post.comments, publishedAt: post.publishedAt!, capturedAt: scoringCapturedAt }, { minLikes: topic.minLikes, minComments: topic.minComments, maxAgeHours: topic.maxAgeHours });
+          scores.set(post.externalId, scoring);
+          reasons.push(...viralAdmissionReasons(
+            { likes: post.likes, comments: post.comments, score: scoring.total },
+            { minLikes: topic.minLikes, minComments: topic.minComments, minScore: topic.minScore },
+          ));
+          return { post, reasons, scoring };
         });
-        if (missing.length) throw new Error(`${topic.platform} Adapter 违反采集字段合同：${post.externalId || "未知候选"} 缺少 ${missing.join("、")}`);
-      }
-      const capturedPosts = discovery.posts;
-      const excludes = topic.excludeTerms.map((term) => term.trim().toLocaleLowerCase()).filter(Boolean);
-      const scoringCapturedAt = new Date();
-      const qualificationLogs = capturedPosts.flatMap((post) => {
-        const reasons: string[] = [];
-        const searchable = `${post.title}\n${post.author}\n${post.term}`.toLocaleLowerCase();
-        const matchedExclude = excludes.find((term) => searchable.includes(term));
-        if (matchedExclude) reasons.push(`命中排除词：${matchedExclude}`);
-        const scoring = scoreViralPost({ likes: post.likes, comments: post.comments, publishedAt: post.publishedAt!, capturedAt: scoringCapturedAt }, { minLikes: topic.minLikes, minComments: topic.minComments, maxAgeHours: topic.maxAgeHours });
-        scoreByExternalId.set(post.externalId, scoring);
-        if (scoring.total < topic.minScore) reasons.push(`三角评分 ${scoring.total.toFixed(1)} < 硬阈值 ${topic.minScore}`);
-        return [{ post, reasons, scoring }];
+        const logs: PlatformDiscoveryResult["logs"] = qualificationItems.map((item) => ({ timestamp: new Date().toISOString(), level: "info" as const, eventType: item.reasons.length ? "post_skipped" : "post_qualified", message: item.reasons.length ? `跳过帖子：${item.reasons.join("；")}` : viralAdmissionPassedMessage({ likes: item.post.likes, comments: item.post.comments, score: item.scoring.total }, { minLikes: topic.minLikes, minComments: topic.minComments, minScore: topic.minScore }), payload: { externalId: item.post.externalId, likes: item.post.likes, comments: item.post.comments, publishedAt: item.post.publishedAt, score: item.scoring.total, thresholds: { minLikes: topic.minLikes, minComments: topic.minComments, minScore: topic.minScore }, scoring: item.scoring, reasons: item.reasons } }));
+        for (const term of topic.terms) {
+          const termItems = qualificationItems.filter((item) => item.post.term === term);
+          logs.push({ timestamp: new Date().toISOString(), level: "info" as const, eventType: "term_qualification_summary", message: `${term}：检查 ${termItems.length} 条字段完整候选，合格 ${termItems.filter((item) => item.reasons.length === 0).length} 条`, term, payload: { term, captured: termItems.length, qualified: termItems.filter((item) => item.reasons.length === 0).length, candidateLimit: discoveryRequest.policy.candidateLimitPerTerm, mediaTypeFilter: topic.mediaTypeFilter, thresholds: { minLikes: topic.minLikes, minComments: topic.minComments, minScore: topic.minScore } } });
+        }
+        return { posts: qualificationItems.filter((item) => item.reasons.length === 0).map((item) => item.post), logs, scores };
+      };
+      const fallback = adapter.discoveryFallback?.enabled() ? (reason: Parameters<NonNullable<typeof adapter.discoveryFallback>["discover"]>[1]) => adapter.discoveryFallback!.discover({ ...discoveryRequest, terms: reason.terms?.length ? reason.terms : discoveryRequest.terms }, reason) : undefined;
+      const outcome = await runDiscoveryWithFallback({
+        primary: () => adapter.discover(discoveryRequest),
+        qualify: qualifyDiscovery,
+        acceptedCount: (qualification) => qualification.posts.length,
+        missingPartitions: (qualification) => topic.terms.filter((term) => !qualification.posts.some((post) => post.term === term)),
+        mergeResults: (primary, fallbackResult) => ({ posts: [...primary.posts, ...fallbackResult.posts], logs: [...primary.logs, ...fallbackResult.logs] }),
+        fallback,
       });
-      const qualified = qualificationLogs.filter((item) => item.reasons.length === 0);
-      discovered = qualified.map((item) => item.post);
-      discovery.logs.push(...qualificationLogs.map((item) => ({ timestamp: new Date().toISOString(), level: "info" as const, eventType: item.reasons.length ? "post_skipped" : "post_qualified", message: item.reasons.length ? `跳过帖子：${item.reasons.join("；")}` : `帖子通过评分硬阈值（三角评分 ${item.scoring.total.toFixed(1)} ≥ ${topic.minScore}）`, payload: { externalId: item.post.externalId, likes: item.post.likes, comments: item.post.comments, publishedAt: item.post.publishedAt, score: item.scoring.total, scoring: item.scoring, reasons: item.reasons } })));
-      discovery.logs.push({ timestamp: new Date().toISOString(), level: "info", eventType: "qualification_summary", message: `评分硬阈值筛选完成：Bot 提供 ${capturedPosts.length} 条原始候选，合格 ${discovered.length} 条`, payload: { captured: capturedPosts.length, qualified: discovered.length, minScore: topic.minScore } });
-      const failedSearch = discovery.logs.findLast((event) => event.level === "error" && event.eventType === "search_failed");
+      if (outcome.usedFallback) {
+        discovery = { posts: outcome.result.posts, logs: [...(outcome.primaryResult?.logs ?? []), { timestamp: new Date().toISOString(), level: "warn", eventType: "discovery_fallback_started", message: `主抓取不可用，切换到手机视觉抓取：${outcome.reason?.message ?? "未知原因"}`, payload: { reason: outcome.reason?.kind, terms: outcome.reason?.terms, traceId } }, ...(outcome.fallbackResult?.logs ?? []), ...(outcome.fallbackError ? [{ timestamp: new Date().toISOString(), level: "warn" as const, eventType: "discovery_fallback_failed", message: `部分追踪词手机视觉回退失败，保留其他追踪词的合格结果：${outcome.fallbackError}`, payload: { terms: outcome.reason?.terms, traceId } }] : []), ...outcome.qualification.logs] };
+      } else {
+        discovery = { posts: outcome.result.posts, logs: [...outcome.result.logs, ...outcome.qualification.logs] };
+      }
+      discovered = outcome.qualification.posts;
+      scoreByExternalId = outcome.qualification.scores;
+      const failedSearch = outcome.result.logs.findLast((event) => event.level === "error" && event.eventType === "search_failed");
       if (!discovered.length && failedSearch) {
         errorCode = "DISCOVERY_EXECUTION_FAILED";
         errorMessage = failedSearch.message;
@@ -218,7 +290,7 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
     const startedAt = new Date();
     const status = errorCode ? "failed" : "completed";
     const adapterProvider = getPlatformAdapter(topic.platform)?.id ?? `${topic.platform.toLowerCase()}-unregistered`;
-    const collection = await tx.collectionRun.create({ data: { workspaceId: workspace.id, projectId: topic.projectId, topicWatchId: topic.id, provider: adapterProvider, traceId, inputSnapshot: normalizeJson({ topicWatchId, terms: topic.terms, excludeTerms: topic.excludeTerms, platform: topic.platform, thresholds: { minLikes: topic.minLikes, minComments: topic.minComments, maxAgeHours: topic.maxAgeHours, minScore: topic.minScore }, preflight }), status, errorCode: errorCode || undefined, errorMessage: errorMessage || undefined, startedAt, completedAt: new Date() } });
+    const collection = await tx.collectionRun.create({ data: { workspaceId: workspace.id, projectId: topic.projectId, topicWatchId: topic.id, provider: adapterProvider, traceId, inputSnapshot: normalizeJson({ topicWatchId, terms: topic.terms, excludeTerms: topic.excludeTerms, platform: topic.platform, policy: discoveryPolicy(topic.mediaTypeFilter as DiscoveryMediaTypeFilter), thresholds: { minLikes: topic.minLikes, minComments: topic.minComments, maxAgeHours: topic.maxAgeHours, minScore: topic.minScore }, preflight }), status, errorCode: errorCode || undefined, errorMessage: errorMessage || undefined, startedAt, completedAt: new Date() } });
     let outputCount = 0;
     if (!errorCode) {
       const baselineSince = new Date(startedAt.getTime() - topic.anomalyBaselineDays * 86_400_000);
@@ -247,13 +319,13 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
         const anomaly = !topic.anomalyEnabled ? undefined
           : candidateAgeHours === undefined ? { state: "missing_published_at" as const, cohortSize: cohort.length }
           : scorePositiveEngagementOutlier({ likes: post.likes, comments: post.comments, ageHours: candidateAgeHours }, cohort, { minSamples: topic.anomalyMinSamples, zThreshold: topic.anomalyZThreshold });
-        const admissionReason = `三角评分 ${score.toFixed(1)} ≥ 硬阈值 ${topic.minScore}`;
+        const admissionReason = viralAdmissionPassedMessage({ likes: post.likes, comments: post.comments, score }, { minLikes: topic.minLikes, minComments: topic.minComments, minScore: topic.minScore });
         const reason = anomaly?.state === "positive_outlier" ? `${admissionReason}；同平台同话题正向异常 z=${anomaly.score.toFixed(2)}`
           : anomaly?.state === "insufficient_baseline" ? `${admissionReason}；相对异常基线不足（${anomaly.cohortSize}/${topic.anomalyMinSamples}）`
           : anomaly?.state === "normal" ? `${admissionReason}；相对异常正常（z=${anomaly.score.toFixed(2)}）`
           : admissionReason;
         const canonicalHash = createHash("md5").update(post.canonicalUrl).digest("hex");
-        const source = await tx.sourcePost.upsert({ where: { projectId_platform_externalId: { projectId: topic.projectId, platform: topic.platform, externalId: post.externalId } }, create: { workspaceId: workspace.id, projectId: topic.projectId, platform: topic.platform, externalId: post.externalId, canonicalUrl: post.canonicalUrl, canonicalHash, author: post.author, title: post.title, publishedAt: post.publishedAt ? new Date(post.publishedAt) : undefined, mediaType: post.mediaType, rawPayload: normalizeJson(post.rawPayload) }, update: { canonicalUrl: post.canonicalUrl, canonicalHash, author: post.author, title: post.title, publishedAt: post.publishedAt ? new Date(post.publishedAt) : undefined, mediaType: post.mediaType, rawPayload: normalizeJson(post.rawPayload) } });
+        const source = await tx.sourcePost.upsert({ where: { projectId_platform_externalId: { projectId: topic.projectId, platform: topic.platform, externalId: post.externalId } }, create: { workspaceId: workspace.id, projectId: topic.projectId, platform: topic.platform, externalId: post.externalId, canonicalUrl: post.canonicalUrl, canonicalHash, author: post.author, title: post.title, body: post.body ?? "", publishedAt: post.publishedAt ? new Date(post.publishedAt) : undefined, mediaType: post.mediaType, rawPayload: normalizeJson(post.rawPayload) }, update: { canonicalUrl: post.canonicalUrl, canonicalHash, author: post.author, title: post.title, body: post.body ?? "", publishedAt: post.publishedAt ? new Date(post.publishedAt) : undefined, mediaType: post.mediaType, rawPayload: normalizeJson(post.rawPayload) } });
         await ensureSourcePostCover(tx, { workspaceId: workspace.id, projectId: topic.projectId, sourcePostId: source.id, evidence: post.coverEvidence });
         await tx.sourceMetricSnapshot.create({ data: { workspaceId: workspace.id, projectId: topic.projectId, sourcePostId: source.id, likes: post.likes, comments: post.comments, score, rawPayload: normalizeJson({ term: post.term, scoring, anomaly }) } });
         await tx.sourcePostMatch.upsert({ where: { sourcePostId_topicWatchId: { sourcePostId: source.id, topicWatchId: topic.id } }, create: { workspaceId: workspace.id, projectId: topic.projectId, sourcePostId: source.id, topicWatchId: topic.id, score, reason }, update: { score, reason } });
@@ -266,7 +338,7 @@ async function runTopicWatch(request: IncomingMessage, response: ServerResponse,
     const events = [...discovery.logs];
     if (failedCheck) events.unshift({ timestamp: new Date().toISOString(), level: "error" as const, eventType: "preflight_failed", message: errorMessage, payload: { check: failedCheck.key } });
     if (errorMessage && !failedCheck) events.push({ timestamp: new Date().toISOString(), level: "error" as const, eventType: "run_failed", message: errorMessage });
-    events.push({ timestamp: new Date().toISOString(), level: errorCode ? "error" as const : "info" as const, eventType: errorCode ? "run_failed" : "run_completed", message: errorCode ? `运行结束：${errorMessage}` : `运行结束：检查 ${discovery.logs.filter((item) => item.eventType === "candidate_read").length} 个候选，取得 ${outputCount} 条真实帖子`, payload: { outputCount } });
+    events.push({ timestamp: new Date().toISOString(), level: errorCode ? "error" as const : "info" as const, eventType: errorCode ? "run_failed" : "run_completed", message: errorCode ? `运行结束：${errorMessage}` : `运行结束：检查 ${discovery.logs.filter((item) => item.eventType === "candidate_read" || item.eventType === "candidate_extracted").length} 个候选，取得 ${outputCount} 条真实帖子`, payload: { outputCount } });
     for (const event of events) {
       await tx.runEvent.create({ data: { workspaceId: workspace.id, projectId: topic.projectId, runId: audit.id, level: event.level, eventType: event.eventType, message: event.message, payload: event.payload ? normalizeJson(event.payload) : undefined, createdAt: new Date(event.timestamp) } });
     }
@@ -398,25 +470,41 @@ async function listSourcePosts(request: IncomingMessage, response: ServerRespons
   const posts = await db.sourcePost.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { capturedAt: "desc" } });
   const metrics = await db.sourceMetricSnapshot.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { capturedAt: "desc" } });
   const matches = await db.sourcePostMatch.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) }, orderBy: { createdAt: "desc" } });
-  const coverLinks = posts.length ? await db.artifactLink.findMany({ where: { workspaceId: workspace.id, entityType: "source_post", role: "cover", entityId: { in: posts.map((post) => post.id) } }, orderBy: { createdAt: "desc" } }) : [];
+  const topics = await db.topicWatch.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) } });
   const patternCards = await db.patternCard.findMany({ where: { workspaceId: workspace.id, ...(projectId ? { projectId } : {}) } });
   const patternVersions = patternCards.length ? await db.patternCardVersion.findMany({ where: { workspaceId: workspace.id, patternCardId: { in: patternCards.map((card) => card.id) } }, orderBy: { version: "desc" } }) : [];
   const latest = new Map<string, typeof metrics[number]>(); for (const metric of metrics) if (!latest.has(metric.sourcePostId)) latest.set(metric.sourcePostId, metric);
-  const latestMatch = new Map<string, typeof matches[number]>(); for (const match of matches) if (!latestMatch.has(match.sourcePostId)) latestMatch.set(match.sourcePostId, match);
+  const postById = new Map(posts.map((post) => [post.id, post]));
+  const topicById = new Map(topics.map((topic) => [topic.id, topic]));
+  const admittedBySource = new Map<string, { match: typeof matches[number]; topic: typeof topics[number]; evaluation: ReturnType<typeof evaluateViralAdmission> }>();
+  for (const match of matches) {
+    if (admittedBySource.has(match.sourcePostId)) continue;
+    const post = postById.get(match.sourcePostId);
+    const metric = latest.get(match.sourcePostId);
+    const topic = match.topicWatchId ? topicById.get(match.topicWatchId) : undefined;
+    if (!post || !metric || !topic) continue;
+    const evaluation = evaluateViralAdmission(
+      { likes: metric.likes, comments: metric.comments, publishedAt: post.publishedAt, capturedAt: metric.capturedAt },
+      { minLikes: topic.minLikes, minComments: topic.minComments, minScore: topic.minScore, maxAgeHours: topic.maxAgeHours },
+    );
+    if (evaluation.passed) admittedBySource.set(match.sourcePostId, { match, topic, evaluation });
+  }
+  const visiblePosts = posts.filter((post) => admittedBySource.has(post.id));
+  const coverLinks = visiblePosts.length ? await db.artifactLink.findMany({ where: { workspaceId: workspace.id, entityType: "source_post", role: "cover", entityId: { in: visiblePosts.map((post) => post.id) } }, orderBy: { createdAt: "desc" } }) : [];
   const coverBySource = new Map<string, typeof coverLinks[number]>(); for (const link of coverLinks) if (!coverBySource.has(link.entityId)) coverBySource.set(link.entityId, link);
   const cardBySource = new Map(patternCards.map((card) => [card.sourcePostId, card]));
   const latestPattern = new Map<string, typeof patternVersions[number]>(); for (const version of patternVersions) if (!latestPattern.has(version.patternCardId)) latestPattern.set(version.patternCardId, version);
-  json(response, 200, posts.map((post) => {
+  json(response, 200, visiblePosts.map((post) => {
     const metric = latest.get(post.id);
-    const match = latestMatch.get(post.id);
+    const admitted = admittedBySource.get(post.id)!;
     const raw = metric?.rawPayload && typeof metric.rawPayload === "object" && !Array.isArray(metric.rawPayload) ? metric.rawPayload as Record<string, unknown> : {};
     const anomaly = raw.anomaly && typeof raw.anomaly === "object" && !Array.isArray(raw.anomaly) ? raw.anomaly as Record<string, unknown> : undefined;
-    const scoring = raw.scoring && typeof raw.scoring === "object" && !Array.isArray(raw.scoring) ? raw.scoring as Record<string, unknown> : undefined;
+    const scoring = admitted.evaluation.scoring as unknown as Record<string, unknown> | undefined;
     const components = scoring?.components && typeof scoring.components === "object" && !Array.isArray(scoring.components) ? scoring.components as Record<string, unknown> : undefined;
     const sourceRaw = post.rawPayload && typeof post.rawPayload === "object" && !Array.isArray(post.rawPayload) ? post.rawPayload as Record<string, unknown> : {};
     const signals = [
       post.publishedAt ? `发布时间已确认：${post.publishedAt.toISOString()}` : "发布时间待确认",
-      `评分硬阈值结果：${match?.reason ?? "未匹配话题规则"}`,
+      `评分硬阈值结果：${viralAdmissionPassedMessage({ likes: metric?.likes ?? 0, comments: metric?.comments ?? 0, score: admitted.evaluation.score }, admitted.topic)}`,
       anomaly?.state === "insufficient_baseline" ? `相对异常基线不足：${Number(anomaly.cohortSize ?? 0)} 条` : anomaly?.state === "positive_outlier" ? "相对异常：正向爆发" : anomaly?.state === "normal" ? "相对异常：正常波动" : "相对异常：未启用",
     ];
     const likes = metric?.likes ?? 0;
@@ -433,7 +521,9 @@ async function listSourcePosts(request: IncomingMessage, response: ServerRespons
       { label: "点赞速度分", value: typeof components?.likeVelocity === "number" ? components.likeVelocity.toFixed(1) : "—" },
       { label: "评论强度分", value: typeof components?.commentStrength === "number" ? components.commentStrength.toFixed(1) : "—" },
     ] : [{ label: "点赞", value: likes.toLocaleString("zh-CN") }, { label: "评论", value: comments.toLocaleString("zh-CN") }, { label: "评论率", value: likes > 0 ? `${(comments / likes * 100).toFixed(2)}%` : "—" }];
-    return { id: post.id, workspaceId: post.workspaceId, projectId: post.projectId, platform: post.platform, externalId: post.externalId, canonicalUrl: post.canonicalUrl, author: post.author, title: post.title, publishedAt: post.publishedAt, capturedAt: post.capturedAt, mediaType: post.mediaType, reviewState: post.reviewState, action: post.action, createdAt: post.createdAt, updatedAt: post.updatedAt, likes, comments, score: metric?.score ?? 0, reason: match?.reason ?? "未匹配话题规则", topic: typeof raw.term === "string" ? raw.term : "", image: cover ? `${BASE}/artifacts/${cover.artifactId}/content` : "", capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", patternCard: pattern?.payload, patternCardVersion: pattern?.version, evidence: { signals, scoreBreakdown, capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", capturedAt: metric?.capturedAt ?? post.capturedAt } };
+    const currentReason = viralAdmissionPassedMessage({ likes, comments, score: admitted.evaluation.score }, admitted.topic);
+    const sourceLink = getPlatformAdapter(post.platform)?.sourceLinkStatus?.({ externalId: post.externalId, canonicalUrl: post.canonicalUrl }) ?? { usable: true };
+    return { id: post.id, workspaceId: post.workspaceId, projectId: post.projectId, platform: post.platform, externalId: post.externalId, canonicalUrl: post.canonicalUrl, sourceLink, author: post.author, title: post.title, body: post.body, publishedAt: post.publishedAt, capturedAt: post.capturedAt, mediaType: post.mediaType, createdAt: post.createdAt, updatedAt: post.updatedAt, likes, comments, score: admitted.evaluation.score, reason: currentReason, topic: typeof raw.term === "string" ? raw.term : "", image: cover ? `${BASE}/artifacts/${cover.artifactId}/content` : "", capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", patternCard: pattern?.payload, patternCardVersion: pattern?.version, evidence: { signals, scoreBreakdown, capturedBy: typeof sourceRaw.source === "string" ? sourceRaw.source : "control-api", capturedAt: metric?.capturedAt ?? post.capturedAt } };
   }));
 }
 
@@ -464,39 +554,40 @@ async function rescoreSourcePosts(request: IncomingMessage, response: ServerResp
   const matches = await db.sourcePostMatch.findMany({ where: { workspaceId: workspace.id, projectId }, orderBy: { createdAt: "desc" } });
   const topics = await db.topicWatch.findMany({ where: { workspaceId: workspace.id, projectId } });
   const latestMetric = new Map<string, typeof metrics[number]>(); for (const metric of metrics) if (!latestMetric.has(metric.sourcePostId)) latestMetric.set(metric.sourcePostId, metric);
-  const latestMatch = new Map<string, typeof matches[number]>(); for (const match of matches) if (!latestMatch.has(match.sourcePostId)) latestMatch.set(match.sourcePostId, match);
+  const postById = new Map(posts.map((post) => [post.id, post]));
   const topicById = new Map(topics.map((topic) => [topic.id, topic]));
-  let updated = 0;
+  let updatedMatches = 0;
+  let updatedMetrics = 0;
   let unscorable = 0;
   await db.$transaction(async (tx) => {
-    for (const post of posts) {
-      const metric = latestMetric.get(post.id);
-      const match = latestMatch.get(post.id);
-      const topic = match?.topicWatchId ? topicById.get(match.topicWatchId) : undefined;
-      if (!metric || !match || !topic) continue;
+    const bestByMetric = new Map<string, { score: number; scoring: ViralScoreResult | undefined; reason: string }>();
+    for (const match of matches) {
+      const post = postById.get(match.sourcePostId);
+      const metric = latestMetric.get(match.sourcePostId);
+      const topic = match.topicWatchId ? topicById.get(match.topicWatchId) : undefined;
+      if (!post || !metric || !topic) continue;
+      const evaluation = evaluateViralAdmission(
+        { likes: metric.likes, comments: metric.comments, publishedAt: post.publishedAt, capturedAt: metric.capturedAt },
+        { minLikes: topic.minLikes, minComments: topic.minComments, minScore: topic.minScore, maxAgeHours: topic.maxAgeHours },
+      );
+      const reason = evaluation.passed
+        ? viralAdmissionPassedMessage({ likes: metric.likes!, comments: metric.comments!, score: evaluation.score }, topic)
+        : `未通过硬门槛：${evaluation.reasons.join("；")}`;
+      await tx.sourcePostMatch.update({ where: { id: match.id }, data: { score: evaluation.score, reason } });
+      const best = bestByMetric.get(metric.id);
+      if (!best || evaluation.score > best.score) bestByMetric.set(metric.id, { score: evaluation.score, scoring: evaluation.scoring, reason });
+      updatedMatches += 1;
+      if (!evaluation.scoring) unscorable += 1;
+    }
+    for (const [metricId, best] of bestByMetric) {
+      const metric = metrics.find((candidate) => candidate.id === metricId)!;
       const oldRaw = metric.rawPayload && typeof metric.rawPayload === "object" && !Array.isArray(metric.rawPayload) ? metric.rawPayload as Record<string, unknown> : {};
-      if (!post.publishedAt || metric.likes === null || metric.comments === null) {
-        const reason = "历史候选缺少发布时间或互动原始值，无法通过评分硬阈值";
-        await tx.sourceMetricSnapshot.update({ where: { id: metric.id }, data: { score: 0, rawPayload: normalizeJson({ ...oldRaw, scoring: { version: "velocity-triangle-v1", state: "unscorable", reason } }) } });
-        await tx.sourcePostMatch.update({ where: { id: match.id }, data: { score: 0, reason } });
-        unscorable += 1;
-        continue;
-      }
-      const scoring = scoreViralPost({ likes: metric.likes, comments: metric.comments, publishedAt: post.publishedAt, capturedAt: metric.capturedAt }, { minLikes: topic.minLikes, minComments: topic.minComments, maxAgeHours: topic.maxAgeHours });
-      const reason = scoring.total >= topic.minScore ? `三角评分 ${scoring.total.toFixed(1)} ≥ 硬阈值 ${topic.minScore}` : `三角评分 ${scoring.total.toFixed(1)} < 硬阈值 ${topic.minScore}`;
-      await tx.sourceMetricSnapshot.update({ where: { id: metric.id }, data: { score: scoring.total, rawPayload: normalizeJson({ ...oldRaw, scoring }) } });
-      await tx.sourcePostMatch.update({ where: { id: match.id }, data: { score: scoring.total, reason } });
-      updated += 1;
+      const scoring = best.scoring ?? { version: "velocity-triangle-v1", state: "unscorable", reason: best.reason };
+      await tx.sourceMetricSnapshot.update({ where: { id: metric.id }, data: { score: best.score, rawPayload: normalizeJson({ ...oldRaw, scoring }) } });
+      updatedMetrics += 1;
     }
   });
-  json(response, 200, { ok: true, projectId, updated, unscorable });
-}
-
-async function reviewSourcePosts(request: IncomingMessage, response: ServerResponse) {
-  const { db, workspace } = await currentWorkspace(); const input = objectInput(await bodyJson(request)); const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId"); const ids = stringArray(input.ids ?? [], "ids").map((id) => uuidParam(id, "sourcePostId")); const status = input.status === "approved" ? "approved" : input.status === "rejected" ? "rejected" : "pending";
-  const result = await db.$transaction(async (tx) => { const posts = await tx.sourcePost.findMany({ where: { id: { in: ids }, workspaceId: workspace.id, projectId } }); if (posts.length !== ids.length) throw new ValidationError("部分帖子不存在或不属于当前项目"); for (const post of posts) { await tx.sourcePost.update({ where: { id: post.id }, data: { reviewState: status, action: status === "approved" ? "adapt" : status === "rejected" ? "ignored" : "unreviewed" } }); await tx.sourceReview.create({ data: { workspaceId: workspace.id, projectId: post.projectId, sourcePostId: post.id, status, action: status === "approved" ? "adapt" : status === "rejected" ? "ignored" : "unreviewed", reason: optionalString(input.reason, "reason", 1000), reviewer: "dashboard" } }); }
-    return posts.length;
-  }); json(response, 200, { updated: result });
+  json(response, 200, { ok: true, projectId, updated: updatedMatches, updatedMatches, updatedMetrics, unscorable });
 }
 
 function insightKind(value: unknown): InsightKind {
@@ -712,8 +803,17 @@ async function createIdeas(request: IncomingMessage, response: ServerResponse) {
   const input = objectInput(await bodyJson(request));
   const projectId = uuidParam(typeof input.projectId === "string" ? input.projectId : undefined, "projectId");
   const sourceIds = stringArray(input.sourcePostIds ?? [], "sourcePostIds").map((id) => uuidParam(id, "sourcePostId"));
-  const approved = await db.sourcePost.findMany({ where: { workspaceId: workspace.id, projectId, id: { in: sourceIds }, reviewState: "approved" } });
-  if (approved.length !== sourceIds.length) throw new ValidationError("选题只能使用已人工通过的来源帖");
+  const sources = await db.sourcePost.findMany({ where: { workspaceId: workspace.id, projectId, id: { in: sourceIds } } });
+  if (sources.length !== sourceIds.length) throw new ValidationError("部分选题来源帖不存在或不属于当前项目");
+  if (sourceIds.length) {
+    const [metrics, matches, topics] = await Promise.all([
+      db.sourceMetricSnapshot.findMany({ where: { workspaceId: workspace.id, projectId, sourcePostId: { in: sourceIds } }, orderBy: { capturedAt: "desc" } }),
+      db.sourcePostMatch.findMany({ where: { workspaceId: workspace.id, projectId, sourcePostId: { in: sourceIds } }, orderBy: { createdAt: "desc" } }),
+      db.topicWatch.findMany({ where: { workspaceId: workspace.id, projectId } }),
+    ]);
+    const allCurrentlyAdmitted = allIdeaSourcesCurrentlyAdmitted(sources, metrics, matches, topics);
+    if (!allCurrentlyAdmitted) throw new ValidationError("选题来源必须继续通过当前 TopicWatch 的点赞、评论和评分硬门槛");
+  }
   const items = Array.isArray(input.ideas)
     ? input.ideas.map((item) => objectInput(item))
     : [{ title: requiredString(input.title, "title", 300), hook: optionalString(input.hook, "hook", 2000) ?? "", copy: optionalString(input.copy, "copy", 5000) ?? "", format: optionalString(input.format, "format", 50) ?? "纯文本", assetMatch: input.assetMatch, assetIds: input.assetIds, imageBrief: input.imageBrief, videoBrief: input.videoBrief, videoPrompt: input.videoPrompt }];
@@ -889,8 +989,31 @@ async function handle(request: IncomingMessage, response: ServerResponse, pathna
       uuidParam(id, "topicWatchId"); const { db, workspace } = await currentWorkspace();
       if (request.method === "POST" && topics[2] === "preflight") { json(response, 200, await topicPreflight(id)); return; }
       if (request.method === "POST" && topics[2] === "runs") { await runTopicWatch(request, response, id); return; }
-      if (request.method === "PATCH" && !topics[2]) { const input = objectInput(await bodyJson(request)); const current = await db.topicWatch.findFirstOrThrow({ where: { id, workspaceId: workspace.id } }); const version = current.currentVersion + 1; const config = { ...input }; const bindingId = input.collectorAccountBindingId === undefined ? current.collectorAccountBindingId : typeof input.collectorAccountBindingId === "string" && input.collectorAccountBindingId.trim() ? uuidParam(input.collectorAccountBindingId, "collectorAccountBindingId") : null; const updated = await db.$transaction(async (tx) => { const topic = await tx.topicWatch.update({ where: { id }, data: { name: input.name === undefined ? current.name : requiredString(input.name, "name"), state: input.state === "paused" ? "paused" : input.state === "running" ? "running" : current.state, terms: input.terms === undefined ? current.terms : stringArray(input.terms, "terms"), excludeTerms: input.excludeTerms === undefined ? current.excludeTerms : stringArray(input.excludeTerms, "excludeTerms"), searchMode: input.searchMode === undefined ? current.searchMode : "sequential", minLikes: numberInput(input.minLikes, "minLikes", current.minLikes), minComments: numberInput(input.minComments, "minComments", current.minComments), maxAgeHours: numberInput(input.maxAgeHours, "maxAgeHours", current.maxAgeHours, 1), minScore: numberInput(input.minScore, "minScore", current.minScore, 0, 100), anomalyEnabled: input.anomalyEnabled === undefined ? current.anomalyEnabled : input.anomalyEnabled !== false, anomalyMethod: input.anomalyMethod === undefined ? current.anomalyMethod : "robust_mad", anomalyBaselineDays: numberInput(input.anomalyBaselineDays, "anomalyBaselineDays", current.anomalyBaselineDays, 7, 365), anomalyMinSamples: numberInput(input.anomalyMinSamples, "anomalyMinSamples", current.anomalyMinSamples, 10, 10_000), anomalyZThreshold: numberInput(input.anomalyZThreshold, "anomalyZThreshold", current.anomalyZThreshold, 1, 10), collectorAccountBindingId: bindingId, cadence: input.cadence === undefined ? current.cadence : requiredString(input.cadence, "cadence"), currentVersion: version }, }); await tx.topicWatchVersion.create({ data: { workspaceId: workspace.id, projectId: current.projectId, topicWatchId: id, version, config: config as Prisma.InputJsonValue } }); return topic; }); json(response, 200, updated); return; }
-      if (request.method === "POST" && topics[2] === "versions") { const input = objectInput(await bodyJson(request)); const current = await db.topicWatch.findFirstOrThrow({ where: { id, workspaceId: workspace.id } }); const version = current.currentVersion + 1; json(response, 201, await db.$transaction(async (tx) => { const topic = await tx.topicWatch.update({ where: { id }, data: { currentVersion: version } }); await tx.topicWatchVersion.create({ data: { workspaceId: workspace.id, projectId: current.projectId, topicWatchId: id, version, config: (input.config ?? input) as Prisma.InputJsonValue } }); return topic; })); return; }
+      if (request.method === "PATCH" && !topics[2]) {
+        const input = objectInput(await bodyJson(request));
+        const current = await db.topicWatch.findFirstOrThrow({ where: { id, workspaceId: workspace.id } });
+        const version = current.currentVersion + 1;
+        const nextConfig = topicConfigSnapshot(current, input);
+        const updated = await db.$transaction(async (tx) => {
+          const topic = await tx.topicWatch.update({ where: { id }, data: { ...nextConfig, currentVersion: version } });
+          await tx.topicWatchVersion.create({ data: { workspaceId: workspace.id, projectId: current.projectId, topicWatchId: id, version, config: normalizeJson(nextConfig) } });
+          return topic;
+        });
+        json(response, 200, updated);
+        return;
+      }
+      if (request.method === "POST" && topics[2] === "versions") {
+        const input = objectInput(await bodyJson(request));
+        const current = await db.topicWatch.findFirstOrThrow({ where: { id, workspaceId: workspace.id } });
+        const version = current.currentVersion + 1;
+        const nextConfig = topicConfigSnapshot(current, objectInput(input.config ?? input));
+        json(response, 201, await db.$transaction(async (tx) => {
+          const topic = await tx.topicWatch.update({ where: { id }, data: { ...nextConfig, currentVersion: version } });
+          await tx.topicWatchVersion.create({ data: { workspaceId: workspace.id, projectId: current.projectId, topicWatchId: id, version, config: normalizeJson(nextConfig) } });
+          return topic;
+        }));
+        return;
+      }
     }
     const projectTopic = pathname.match(new RegExp(`^${BASE}/projects/([^/]+)/topic-watches$`));
     if (projectTopic && request.method === "POST") { await createTopic(request, response, projectTopic[1]); return; }
@@ -911,7 +1034,6 @@ async function handle(request: IncomingMessage, response: ServerResponse, pathna
     if (sourceAnalysis && request.method === "GET" && sourceAnalysis[2] === "analysis-context") { await analysisContext(request, response, sourceAnalysis[1]); return; }
     if (sourceAnalysis && request.method === "PUT" && sourceAnalysis[2] === "analysis") { await saveAnalysis(request, response, sourceAnalysis[1]); return; }
     if (sourceAnalysis && request.method === "POST" && sourceAnalysis[2] === "comment-runs") { await runCommentCollection(request, response, sourceAnalysis[1]); return; }
-    if (pathname === `${BASE}/source-posts/reviews` && request.method === "POST") { await reviewSourcePosts(request, response); return; }
     const ideas = pathname.match(new RegExp(`^${BASE}/ideas(?:/([^/]+))?$`));
     if (ideas && request.method === "GET" && !ideas[1]) { await listIdeas(request, response); return; }
     if (ideas && request.method === "POST" && !ideas[1]) { await createIdeas(request, response); return; }

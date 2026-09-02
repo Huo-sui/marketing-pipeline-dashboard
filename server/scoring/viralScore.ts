@@ -52,8 +52,8 @@ function rounded(value: number, digits = 2) {
 /**
  * Platform-owned admission score. Collectors provide facts only; this function
  * converts publication age and engagement velocity into a comparable 0–100
- * score. TopicWatch values calibrate the curve, while only minScore decides
- * admission in the control plane.
+ * score. TopicWatch engagement values calibrate the curve; the control plane
+ * separately enforces minLikes, minComments, and minScore as hard gates.
  */
 export function scoreViralPost(input: ViralScoreInput, calibration: ViralScoreCalibration): ViralScoreResult {
   const likes = finiteNonNegative(input.likes, "点赞数");
@@ -72,9 +72,9 @@ export function scoreViralPost(input: ViralScoreInput, calibration: ViralScoreCa
   const commentsPerHour = comments / ageHours;
   const commentRate = comments / Math.max(1, likes);
 
-  // Rule values calibrate the curve instead of acting as separate admission
-  // gates. A zero comment threshold still receives a meaningful 3% comment
-  // reference so it can never award free points.
+  // Rule values calibrate the curve in addition to the control plane enforcing
+  // minLikes and minComments as hard gates. A zero comment threshold still
+  // receives a meaningful 3% reference so it can never award free points.
   const freshnessHalfLifeHours = Math.min(168, Math.max(24, finiteNonNegative(calibration.maxAgeHours, "发布时间窗口")));
   const likeVelocityTarget = Math.max(1, finiteNonNegative(calibration.minLikes, "点赞参考值")) / 24;
   const commentVelocityTarget = Math.max(1, finiteNonNegative(calibration.minComments, "评论参考值"), calibration.minLikes * 0.03) / 24;

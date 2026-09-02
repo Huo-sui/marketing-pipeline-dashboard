@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { AccountIdentityInput, AccountLifecycleStatus, AccountRecord, AccountSessionStatus, AccountSetupInput, AutomationProfileRecord, IdeaRecord, IdeaStatus, ProjectAccountBinding, ProjectRecord, ProjectSetupInput, ProjectStatus, ReviewAction, SourcePost, SourceReviewState, TopicWatch } from "../types";
+import type { AccountIdentityInput, AccountLifecycleStatus, AccountRecord, AccountSessionStatus, AccountSetupInput, AutomationProfileRecord, IdeaRecord, IdeaStatus, ProjectAccountBinding, ProjectRecord, ProjectSetupInput, ProjectStatus, SourcePost, TopicWatch } from "../types";
 
 export interface DemoStateValue {
   selectedProject: string;
@@ -15,8 +15,6 @@ export interface DemoStateValue {
   sourcePosts: SourcePost[];
   ideas: IdeaRecord[];
   topicWatches: TopicWatch[];
-  updatePostAction: (id: string, action: ReviewAction) => Promise<void>;
-  updatePostReview: (ids: string[], state: SourceReviewState) => Promise<void>;
   updateIdeaStatus: (id: string, status: IdeaStatus) => Promise<void>;
   updateIdea: (id: string, patch: Partial<IdeaRecord>) => Promise<void>;
   addIdeas: (items: IdeaRecord[]) => void;

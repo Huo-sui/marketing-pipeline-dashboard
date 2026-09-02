@@ -1,33 +1,19 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { resolveAdbExecutable, resolveAndroidSdkRoot, resolveLocalAppiumEntry } from "./androidToolchain.js";
+import { androidUiNodes, type AndroidUiNode } from "./androidUi.js";
+
+export { androidUiNodes } from "./androidUi.js";
+export type { AndroidUiNode } from "./androidUi.js";
 
 const execFileAsync = promisify(execFile);
 const appiumBaseUrl = (process.env.APPIUM_URL ?? "http://127.0.0.1:4723/wd/hub").replace(/\/$/, "");
 
 export type AndroidDevice = { serial: string; model?: string; appInstalled: boolean };
-export type AndroidUiNode = { text: string; desc: string; className: string; bounds?: { left: number; top: number; right: number; bottom: number } };
 
 function deviceArgs(serial: string) {
   if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(serial)) throw new Error("设备序列号格式无效");
   return ["-s", serial];
-}
-
-function decodeXml(value: string) {
-  return value.replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").trim();
-}
-
-export function androidUiNodes(xml: string): AndroidUiNode[] {
-  return [...xml.matchAll(/<(?:node|android\.[^\s>]+)\b[^>]*>/g)].map((match) => {
-    const tag = match[0];
-    const bounds = tag.match(/\bbounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/);
-    return {
-      text: decodeXml(tag.match(/\btext="([^"]*)"/)?.[1] ?? ""),
-      desc: decodeXml(tag.match(/\bcontent-desc="([^"]*)"/)?.[1] ?? ""),
-      className: decodeXml(tag.match(/\bclass="([^"]*)"/)?.[1] ?? match[0].match(/^<([^\s>]+)/)?.[1] ?? ""),
-      bounds: bounds ? { left: Number(bounds[1]), top: Number(bounds[2]), right: Number(bounds[3]), bottom: Number(bounds[4]) } : undefined,
-    };
-  });
 }
 
 export class AndroidPhoneDriver {

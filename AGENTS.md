@@ -10,7 +10,7 @@
 - Adapter 必须显式声明运行依赖（账号绑定、已确认身份、手机 Runner、视觉 Provider）和采集必填字段清单；控制层不得用 `mode === phone` 推断 TikTok 规则。
 - SourcePost upsert、SourceMetricSnapshot、SourcePostMatch、PipelineRun/RunEvent、幂等与来源候选池是统一 Pipeline 能力；原始帖子作为证据保留在话题雷达，只有由来源证据推导、可编辑并支持人工终审的 Idea 才进入“选题箱”。
 - “灵感箱”中的灵感、痛点与反馈，以及“待审草稿”的版本、来源选题、原帖溯源和素材来源，同样属于统一 Pipeline 能力，不得写成小红书专属数据结构。
-- 抓取 Bot 只负责原始数据与证据，不得计算入选分。控制层使用发布时间、点赞速度、评论速度与评论率计算三角评分，只有 TopicWatch 的 `minScore` 作为入选硬阈值；`minLikes`、`minComments` 与 `maxAgeHours` 仅校准评分曲线，不得再作为独立入选门槛。相对异常只能使用同平台、同 TopicWatch、同追踪词、相近发布年龄的历史基线，不能跨平台比较，也不能用抓取时间冒充发布时间。
+- 抓取 Bot 只负责原始数据与证据，不得计算入选分。控制层使用发布时间、点赞速度、评论速度与评论率计算三角评分；TopicWatch 的 `minLikes`、`minComments` 与 `minScore` 是三个必须同时通过的独立入选硬门槛，其中 `minLikes` 与 `minComments` 也用于校准评分曲线。`maxAgeHours` 只校准评分曲线，不作为独立入选门槛。相对异常只能使用同平台、同 TopicWatch、同追踪词、相近发布年龄的历史基线，不能跨平台比较，也不能用抓取时间冒充发布时间。
 - UI 的“运行 P0 规则”必须调用已保存规则；不得依赖 Codex 临时操作手机或手工搬运结果。
 
 ## 平台专属能力

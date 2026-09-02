@@ -16,7 +16,9 @@ Comment strength is 60% comment velocity and 40% comment rate. Exponential
 saturation prevents large accounts from forcing every result to 100. A zero
 `minComments` value never awards free points: the curve falls back to a 3%
 comment reference. `minLikes`, `minComments`, and `maxAgeHours` calibrate the
-curve; only the TopicWatch `minScore` is the deterministic admission gate.
+curve. Admission then requires all three deterministic hard gates:
+`likes >= minLikes`, `comments >= minComments`, and `score >= minScore`.
+`maxAgeHours` remains calibration-only.
 
 Anomaly scoring then compares the post with a cohort from the same platform, tracked term, and comparable publication-age bucket. This prevents an established account or an older post from being compared directly with a new post from a different topic.
 

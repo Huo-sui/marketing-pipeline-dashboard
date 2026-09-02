@@ -60,7 +60,7 @@ export async function getSourceAnalysisContext(db: PrismaClient, workspaceId: st
       languages: project.languages,
       platforms: project.platforms,
     },
-    sourcePost: { id: sourcePost.id, projectId: sourcePost.projectId, platform: sourcePost.platform, externalId: sourcePost.externalId, canonicalUrl: sourcePost.canonicalUrl, author: sourcePost.author, title: sourcePost.title, body: sourcePost.body, publishedAt: sourcePost.publishedAt, capturedAt: sourcePost.capturedAt, mediaType: sourcePost.mediaType, reviewState: sourcePost.reviewState, action: sourcePost.action, rawEvidence: safeSourceEvidence(sourcePost.rawPayload) },
+    sourcePost: { id: sourcePost.id, projectId: sourcePost.projectId, platform: sourcePost.platform, externalId: sourcePost.externalId, canonicalUrl: sourcePost.canonicalUrl, author: sourcePost.author, title: sourcePost.title, body: sourcePost.body, publishedAt: sourcePost.publishedAt, capturedAt: sourcePost.capturedAt, mediaType: sourcePost.mediaType, rawEvidence: safeSourceEvidence(sourcePost.rawPayload) },
     metrics: metrics.map((metric) => ({ id: metric.id, capturedAt: metric.capturedAt, likes: metric.likes, comments: metric.comments, shares: metric.shares, saves: metric.saves, views: metric.views, score: metric.score })),
     matches: matches.map((match) => ({ id: match.id, topicWatchId: match.topicWatchId, score: match.score, reason: match.reason, createdAt: match.createdAt })),
     topics: topics.map((topic) => ({ id: topic.id, name: topic.name, platform: topic.platform, terms: topic.terms, excludeTerms: topic.excludeTerms, minLikes: topic.minLikes, minComments: topic.minComments, maxAgeHours: topic.maxAgeHours, minScore: topic.minScore })),

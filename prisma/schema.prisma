@@ -152,6 +152,7 @@ model TopicWatch {
   terms                     String[] @default([])
   excludeTerms              String[] @default([]) @map("exclude_terms")
   searchMode                String   @default("sequential") @map("search_mode")
+  mediaTypeFilter           String   @default("any") @map("media_type_filter")
   cadence                   String
   state                     String   @default("running")
   minLikes                  Int      @default(0) @map("min_likes")

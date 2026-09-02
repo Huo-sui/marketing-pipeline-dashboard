@@ -28,11 +28,11 @@
 - [x] 追踪条件支持最低点赞、最低评论、发布时间窗口和最低评分
 - [x] 追踪规则支持启停、编辑和 Demo 运行抓取
 - [x] 抓取任务页展示抓取、分析、Idea、生成和发布运行记录
-- [x] 帖子页支持缩略图/媒体类型、平台筛选、状态筛选和关键词搜索
+- [x] 帖子页支持缩略图/媒体类型、平台筛选和关键词搜索
 - [x] 帖子详情抽屉展示原帖链接、外部 ID、抓取时间、指标和 Agent 抓取理由
 - [x] 帖子详情展示评分拆解和视频 PatternCard（有分析结果时）
-- [x] 帖子支持单选、全选、批量通过、批量拒绝和全部通过
-- [x] Idea 页显示来源帖子和“只有人工通过内容才进入生成”的门槛
+- [x] 爆帖收件箱只展示同时通过 TopicWatch 点赞、评论和评分硬门槛的来源帖，无需二次人工筛选
+- [x] Idea 页可直接使用当前规则合格的来源帖子，人工终审从生成后的选题开始
 - [x] Idea 批次支持设置输出数量 N、类型、目标平台和额外要求
 - [x] 视频 Idea 强制展示可编辑 Video Prompt / VideoSpec 区域
 - [x] Idea 支持资产匹配、需要生图、不需要资产等判断状态
@@ -72,8 +72,7 @@
 - [ ] `POST /projects/:projectId/tracking-rules`
 - [ ] `PATCH /tracking-rules/:id`、启停和条件版本化
 - [ ] `POST /collection-runs`、`GET /collection-runs/:id`
-- [ ] `GET /source-posts` 支持项目、平台、追踪规则、状态和指标筛选
-- [ ] `POST /source-post-reviews:batch` 支持通过、拒绝和理由
+- [ ] `GET /source-posts` 支持项目、平台、追踪规则和指标筛选，并只返回当前规则合格来源
 - [ ] `POST /idea-runs` 接收 `source_post_ids`、数量 N、类型和约束
 - [ ] `POST /idea-reviews:batch` 保存人工审计记录
 - [ ] `POST /generation-runs` 和 `GET /generation-runs/:id`
@@ -116,15 +115,15 @@
 - [ ] 把供应商无关的 Pattern/CreativeSpec 转换成具体视频模型 Prompt
 - [ ] 支持人在 Idea 层修改 VideoSpec，并保留修订前后差异
 
-## 5. 人工筛选门
+## 5. 来源准入与选题人工终审
 
-- [ ] 抓取完成后状态为 `pending_review`，不能自动进入 Idea
-- [ ] 支持单条通过、单条拒绝、全部通过和部分通过
-- [ ] 支持填写拒绝原因和备注
-- [ ] 记录操作人、时间、对象版本和来源任务
-- [ ] 只有 `approved` 的 SourcePost 才能作为 Idea 输入
-- [ ] 通过后锁定本次输入快照，避免运行中途来源变化
-- [ ] 支持重新打开审核和追加人工备注
+- [x] 抓取完成后由控制层同时校验 TopicWatch 的 `minLikes`、`minComments` 与 `minScore` 三个独立硬门槛
+- [x] 爆帖收件箱只展示当前规则合格的 SourcePost，不设置来源帖人工通过/拒绝状态
+- [x] Agent 可直接读取规则合格来源生成 Idea，不依赖历史 SourcePost `reviewState` 或 `action`
+- [x] 创建 Idea 前按最新指标和当前 TopicWatch 重新校验硬门槛，缺指标、缺发布时间或无有效规则匹配时 fail closed
+- [ ] Idea 支持单条通过、单条拒绝、批量通过和退回
+- [ ] Idea 审核记录操作人、时间、对象版本、来源任务和理由
+- [ ] Idea 通过后锁定本次来源及分析快照，避免后续来源变化污染已审版本
 
 ## 6. Idea 层
 
