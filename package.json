@@ -74,7 +74,7 @@
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.4",
+    "@vitejs/plugin-react": "^6.1.0",
     "appium": "^3.7.0",
     "appium-uiautomator2-driver": "^8.5.0",
     "oxlint": "^1.75.0",
