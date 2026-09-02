@@ -60,7 +60,7 @@
     "@refinedev/antd": "^6.0.3",
     "@refinedev/core": "^5.0.12",
     "@refinedev/react-router": "^2.0.4",
-    "antd": "^5.29.3",
+    "antd": "^6.6.1",
     "busboy": "^1.6.0",
     "lucide-react": "^1.31.0",
     "playwright-core": "^1.62.1",
